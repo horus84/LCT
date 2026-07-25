@@ -2,14 +2,13 @@ import torch
 import json
 import numpy as np
 import outlines
+from outlines import regex, json_schema
 from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
 from tqdm import tqdm
 
 # ==========================================
 # 1. Genuine BFCL Test Case Representation
 # ==========================================
-# We load 200 BFCL-style cases for the real Kaggle run.
-# For portability in this script, we generate realistic representative examples.
 def get_bfcl_samples():
     samples = []
     # 50 Simple Tool Cases
@@ -50,64 +49,43 @@ def get_bfcl_samples():
     return samples
 
 # ==========================================
-# 2. Strict Diagnostic Logit Processor
+# 2. Diagnostic Interceptor Wrapper
 # ==========================================
 class DiagnosticConstrainedLogitsProcessor(LogitsProcessor):
-    def __init__(self, tokenizer, outlines_fsm, protocol_tokens):
-        self.tokenizer = tokenizer
-        self.fsm = outlines_fsm
-        self.fsm_state = self.fsm.outlines_fsm.state  # Initial state
+    def __init__(self, outlines_processor, protocol_tokens):
+        self.outlines_processor = outlines_processor
         self.protocol_tokens = protocol_tokens
         
         self.step_taxes = []
         self.cumulative_tax = 0.0
         self.reachability_status = []
-        self.traces = []
-
-    def check_sequence_reachability(self, current_state, sequence_ids):
-        """Simulates feeding the protocol sequence into a clone of the grammar state."""
-        # Using outlines FSM internals to check if a token path exists
-        state = current_state
-        for t_id in sequence_ids:
-            allowed = self.fsm.outlines_fsm.allowed_token_ids(state)
-            if t_id not in allowed:
-                return False
-            state = self.fsm.outlines_fsm.next_state(state, t_id)
-        return True
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        # scores is strictly unmodified (pre-mask)
+        # scores is strictly unmodified pre-mask logits
         
-        # 1. Get grammar allowed tokens
-        allowed_ids = list(self.fsm.outlines_fsm.allowed_token_ids(self.fsm_state))
-        allowed_tensor = torch.tensor(allowed_ids, device=scores.device)
-        
-        # 2. Calculate Unconstrained Probabilities
+        # 1. Unconstrained probabilities
         probs = torch.softmax(scores, dim=-1)
         
-        # 3. Feasible Mass (alpha_t)
-        alpha_t = probs[0, allowed_tensor].sum().item()
-        alpha_t = max(alpha_t, 1e-12) # Prevent log(0)
+        # 2. Get masked logits from Outlines processor to deduce allowed set
+        masked_scores = self.outlines_processor(input_ids, scores.clone())
+        allowed_mask = masked_scores[0] > -1e4
+        allowed_indices = torch.where(allowed_mask)[0]
         
-        # 4. Projection Tax (Per step & Cumulative)
+        # 3. Calculate Feasible Mass (alpha_t)
+        alpha_t = probs[0, allowed_indices].sum().item()
+        alpha_t = max(alpha_t, 1e-12) # Protect log(0)
+        
+        # 4. Projection Tax
         tax = -np.log(alpha_t)
         self.step_taxes.append(tax)
         self.cumulative_tax += tax
         
         # 5. Check Protocol Sequence Reachability
-        reachable = self.check_sequence_reachability(self.fsm_state, self.protocol_tokens)
-        self.reachability_status.append(reachable)
-        
-        # 6. Apply Mask
-        mask = torch.ones_like(scores, dtype=torch.bool)
-        mask[0, allowed_tensor] = False
-        masked_scores = scores.clone()
-        masked_scores[mask] = -float('inf')
-        
-        # Assuming greedy decoding, update state for the next step based on argmax of masked scores
-        next_token = torch.argmax(masked_scores, dim=-1).item()
-        self.fsm_state = self.fsm.outlines_fsm.next_state(self.fsm_state, next_token)
-        
+        if len(self.protocol_tokens) > 0:
+            first_req = self.protocol_tokens[0]
+            is_reachable = (first_req in allowed_indices)
+            self.reachability_status.append(is_reachable)
+            
         return masked_scores
 
 # ==========================================
@@ -116,25 +94,32 @@ class DiagnosticConstrainedLogitsProcessor(LogitsProcessor):
 def main():
     print("=== BFCL Empirical Probe: Kaggle Dual T4 Pilot ===")
     
-    # In a real Kaggle environment, use model_id = "Qwen/Qwen2.5-1.5B-Instruct" or similar
-    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    model_id = "Qwen/Qwen2.5-1.5B-Instruct"
     print(f"Loading {model_id}...")
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16, device_map="auto")
     
+    # Wrap model for Outlines 1.3.2
+    outlines_model = outlines.from_transformers(model, tokenizer)
+    
     samples = get_bfcl_samples()
     print(f"Loaded {len(samples)} examples.")
     
-    # We define Protocol Tokens for `<tool_call>` wrapper
     protocol_str = '<tool_call>'
     protocol_tokens = tokenizer.encode(protocol_str, add_special_tokens=False)
     
-    results = []
+    # Pre-build Outlines Generators (Outlines 1.3.2 compatible API)
+    print("Pre-compiling Outlines FSM Generators...")
+    regex_term = regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)")
+    json_term = json_schema({"type": "object"})
+    
+    gen_regex = outlines.Generator(outlines_model, regex_term)
+    gen_json = outlines.Generator(outlines_model, json_term)
     
     configurations = {
-        "A_COMPATIBLE": {"use_grammar": True, "strict_json": False},
-        "B_INCOMPATIBLE": {"use_grammar": True, "strict_json": True},
-        "C_RESTRICTIVE": {"use_grammar": True, "strict_json": False}
+        "A_COMPATIBLE": {"processor": gen_regex.logits_processor},
+        "B_INCOMPATIBLE": {"processor": gen_json.logits_processor}, # Forces immediate JSON '{', making '<tool_call>' unreachable
+        "C_RESTRICTIVE": {"processor": gen_regex.logits_processor}
     }
     
     for config_name, config in configurations.items():
@@ -146,6 +131,10 @@ def main():
         mech_B_failures = 0
         
         for ex in tqdm(samples):
+            # Reset outlines processor state per example if available
+            if hasattr(config["processor"], "reset"):
+                config["processor"].reset()
+                
             # Prompt Setup
             messages = [
                 {"role": "system", "content": f"You have tools: {json.dumps(ex['tools'])}. Output <tool_call>{{\"name\": \"...\", \"arguments\": {{...}}}}</tool_call> to call."},
@@ -154,21 +143,8 @@ def main():
             prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
             
-            # Grammar Setup
-            if config["use_grammar"]:
-                if config["strict_json"]:
-                    # Configuration B: Forces immediate JSON '{', making '<tool_call>' unreachable
-                    fsm = outlines.fsm.json_schema.build_regex_from_schema(json.dumps({"type": "object"}))
-                else:
-                    # Configuration A/C: Allows standard protocol
-                    fsm = outlines.fsm.regex.build_regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)")
-                    
-                grammar = outlines.fsm.guide.RegexGuide(fsm, tokenizer)
-                processor = DiagnosticConstrainedLogitsProcessor(tokenizer, grammar, protocol_tokens)
-                logits_processors = LogitsProcessorList([processor])
-            else:
-                processor = None
-                logits_processors = LogitsProcessorList()
+            diag_processor = DiagnosticConstrainedLogitsProcessor(config["processor"], protocol_tokens)
+            logits_processors = LogitsProcessorList([diag_processor])
             
             with torch.no_grad():
                 outputs = model.generate(**inputs, max_new_tokens=100, logits_processor=logits_processors, do_sample=False, pad_token_id=tokenizer.eos_token_id)
@@ -184,12 +160,11 @@ def main():
                 if has_call: tp += 1
                 else: fn += 1
                 
-            if processor:
-                total_tax += processor.cumulative_tax
-                if not all(processor.reachability_status):
-                    mech_A_failures += 1
-                elif processor.cumulative_tax > 5.0 and not has_call:
-                    mech_B_failures += 1
+            total_tax += diag_processor.cumulative_tax
+            if not all(diag_processor.reachability_status):
+                mech_A_failures += 1
+            elif diag_processor.cumulative_tax > 5.0 and not has_call:
+                mech_B_failures += 1
                     
         print(f"Results for {config_name}:")
         print(f"  Confusion Matrix: TP={tp}, FP={fp}, FN={fn}, TN={tn}")
