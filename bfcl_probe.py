@@ -1,8 +1,9 @@
 import torch
 import json
+import time
 import numpy as np
 import outlines
-from outlines import regex, json_schema
+from outlines import regex
 from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessor, LogitsProcessorList
 from tqdm import tqdm
 
@@ -62,25 +63,23 @@ class DiagnosticConstrainedLogitsProcessor(LogitsProcessor):
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
         # scores is strictly unmodified pre-mask logits
-        
-        # 1. Unconstrained probabilities
         probs = torch.softmax(scores, dim=-1)
         
-        # 2. Get masked logits from Outlines processor to deduce allowed set
+        # Get masked logits from Outlines processor to deduce allowed set
         masked_scores = self.outlines_processor(input_ids, scores.clone())
         allowed_mask = masked_scores[0] > -1e4
         allowed_indices = torch.where(allowed_mask)[0]
         
-        # 3. Calculate Feasible Mass (alpha_t)
+        # Calculate Feasible Mass (alpha_t)
         alpha_t = probs[0, allowed_indices].sum().item()
         alpha_t = max(alpha_t, 1e-12) # Protect log(0)
         
-        # 4. Projection Tax
+        # Projection Tax
         tax = -np.log(alpha_t)
         self.step_taxes.append(tax)
         self.cumulative_tax += tax
         
-        # 5. Check Protocol Sequence Reachability
+        # Protocol Sequence Reachability
         if len(self.protocol_tokens) > 0:
             first_req = self.protocol_tokens[0]
             is_reachable = (first_req in allowed_indices)
@@ -95,26 +94,36 @@ def main():
     print("=== BFCL Empirical Probe: Kaggle Dual T4 Pilot ===")
     
     model_id = "Qwen/Qwen2.5-1.5B-Instruct"
-    print(f"Loading {model_id}...")
+    print(f"Loading model: {model_id}...")
+    t_start = time.time()
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16, device_map="auto")
+    print(f"Model loaded in {time.time()-t_start:.2f}s")
     
-    # Wrap model for Outlines 1.3.2
+    # Wrap model for Outlines
     outlines_model = outlines.from_transformers(model, tokenizer)
     
     samples = get_bfcl_samples()
-    print(f"Loaded {len(samples)} examples.")
+    print(f"Loaded {len(samples)} BFCL test samples.")
     
     protocol_str = '<tool_call>'
     protocol_tokens = tokenizer.encode(protocol_str, add_special_tokens=False)
     
-    # Pre-build Outlines Generators (Outlines 1.3.2 compatible API)
-    print("Pre-compiling Outlines FSM Generators...")
-    regex_term = regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)")
-    json_term = json_schema({"type": "object"})
+    # Pre-compile Fast Outlines FSM Generators with verbose progress logging
+    print("\n--- Compiling Grammar Automata ---")
     
+    t0 = time.time()
+    print("[1/2] Compiling Compatible Regex Grammar...")
+    regex_term = regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)")
     gen_regex = outlines.Generator(outlines_model, regex_term)
-    gen_json = outlines.Generator(outlines_model, json_term)
+    print(f"      Done in {time.time()-t0:.2f}s")
+    
+    t1 = time.time()
+    print("[2/2] Compiling Incompatible JSON Regex Grammar...")
+    # Fast lightweight regex JSON constraint (prevents slow recursive schema DFA compilation)
+    json_regex_term = regex(r"\{[\s\S]*\}")
+    gen_json = outlines.Generator(outlines_model, json_regex_term)
+    print(f"      Done in {time.time()-t1:.2f}s")
     
     configurations = {
         "A_COMPATIBLE": {"processor": gen_regex.logits_processor},
@@ -131,11 +140,9 @@ def main():
         mech_B_failures = 0
         
         for ex in tqdm(samples):
-            # Reset outlines processor state per example if available
             if hasattr(config["processor"], "reset"):
                 config["processor"].reset()
                 
-            # Prompt Setup
             messages = [
                 {"role": "system", "content": f"You have tools: {json.dumps(ex['tools'])}. Output <tool_call>{{\"name\": \"...\", \"arguments\": {{...}}}}</tool_call> to call."},
                 {"role": "user", "content": ex["query"]}
@@ -152,7 +159,6 @@ def main():
             gen_text = tokenizer.decode(outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
             has_call = '<tool_call>' in gen_text or '{"name"' in gen_text
             
-            # Confusion Matrix Updates
             if ex["is_no_tool"]:
                 if has_call: fp += 1
                 else: tn += 1
