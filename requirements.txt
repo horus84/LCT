@@ -5,3 +5,8 @@ outlines>=0.0.38
 numpy
 tqdm
 datasets
+pandas
+scikit-learn
+seaborn
+matplotlib
+pyyaml
