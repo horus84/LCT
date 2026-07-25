@@ -8,9 +8,6 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, LogitsProcessor, L
 from tqdm import tqdm
 import csv
 
-# ==========================================
-# 1. Genuine BFCL Test Case Representation
-# ==========================================
 def get_bfcl_samples():
     samples = []
     # 50 Simple Tool Cases
@@ -50,138 +47,142 @@ def get_bfcl_samples():
         })
     return samples
 
-# ==========================================
-# 2. Diagnostic Interceptor Wrapper
-# ==========================================
 class DiagnosticConstrainedLogitsProcessor(LogitsProcessor):
-    def __init__(self, outlines_processor, protocol_tokens):
+    def __init__(self, outlines_processor, protocol_tokens, is_unconstrained=False, tracker_processor_c=None):
         self.outlines_processor = outlines_processor
         self.protocol_tokens = protocol_tokens
+        self.is_unconstrained = is_unconstrained
+        self.tracker_processor_c = tracker_processor_c # For A vs C operational tracking
         
         self.step_taxes = []
         self.cumulative_tax = 0.0
-        self.reachability_status = []
-        self.alpha_ts = []
         
         self.step = 0
-        self.p_tool_first_step = None
-        self.p_notool_first_step = None
+        self.decision_step = -1
+        
+        self.pre_decision_tax = 0.0
+        self.decision_p_tool = 0.0
+        self.decision_p_notool = 0.0
+        self.decision_entropy = 0.0
+        self.min_pre_decision_alpha = 1.0
+        self.protocol_reachable_at_decision = True
+        
+        self.mask_diffs = []
+        self.first_divergence_step = -1
+        
+    def check_full_reachability(self, scores):
+        if not self.outlines_processor: return True
+        # Approximate full sequence reachability by checking immediate token
+        probs = torch.softmax(scores, dim=-1)
+        masked_scores = self.outlines_processor(torch.tensor([[]]), scores.clone())
+        allowed_mask = masked_scores[0] > -1e4
+        allowed_indices = torch.where(allowed_mask)[0]
+        return self.protocol_tokens[0] in allowed_indices
 
     def __call__(self, input_ids: torch.LongTensor, scores: torch.FloatTensor) -> torch.FloatTensor:
-        # scores is strictly unmodified pre-mask logits
         probs = torch.softmax(scores, dim=-1)
+        entropy = -(probs * torch.log(probs + 1e-12)).sum().item()
         
-        # Get masked logits from Outlines processor to deduce allowed set
+        # Unconstrained baseline bypasses tax accumulation
+        if self.is_unconstrained:
+            self.step += 1
+            return scores
+            
         masked_scores = self.outlines_processor(input_ids, scores.clone())
         allowed_mask = masked_scores[0] > -1e4
         allowed_indices = torch.where(allowed_mask)[0]
         
-        # Calculate Feasible Mass (alpha_t)
         alpha_t = probs[0, allowed_indices].sum().item()
-        alpha_t = max(alpha_t, 1e-12) # Protect log(0)
-        self.alpha_ts.append(alpha_t)
+        alpha_t = max(alpha_t, 1e-12)
         
-        # Projection Tax
         tax = -np.log(alpha_t)
         self.step_taxes.append(tax)
         self.cumulative_tax += tax
         
-        # Protocol Sequence Reachability
-        if len(self.protocol_tokens) > 0:
-            first_req = self.protocol_tokens[0]
-            is_reachable = (first_req in allowed_indices)
-            self.reachability_status.append(is_reachable)
-            
-            if self.step == 0:
-                self.p_tool_first_step = probs[0, first_req].item()
-                self.p_notool_first_step = 1.0 - self.p_tool_first_step
-                
+        # A vs C tracking
+        if self.tracker_processor_c is not None:
+            c_scores = self.tracker_processor_c(input_ids, scores.clone())
+            c_mask = c_scores[0] > -1e4
+            diff_size = torch.sum(allowed_mask != c_mask).item()
+            self.mask_diffs.append(diff_size)
+            if diff_size > 0 and self.first_divergence_step == -1:
+                self.first_divergence_step = self.step
+        
+        # Dynamic decision state detection
+        has_generated_protocol = len(input_ids[0]) > 0 and self.protocol_tokens[0] in input_ids[0][-self.step:]
+        
+        if not has_generated_protocol:
+            self.pre_decision_tax = self.cumulative_tax
+            self.min_pre_decision_alpha = min(self.min_pre_decision_alpha, alpha_t)
+            self.decision_p_tool = probs[0, self.protocol_tokens[0]].item() if self.protocol_tokens else 0.0
+            self.decision_p_notool = 1.0 - self.decision_p_tool
+            self.decision_entropy = entropy
+            self.protocol_reachable_at_decision = self.check_full_reachability(scores)
+            self.decision_step = self.step
+
         self.step += 1
         return masked_scores
 
-# ==========================================
-# 3. Main Pilot Execution
-# ==========================================
 def main():
-    print("=== BFCL Empirical Probe: Kaggle Dual T4 Pilot ===")
+    print("=== BFCL Empirical Probe: Counterfactual & Leakage Audit ===")
     
     model_id = "Qwen/Qwen2.5-1.5B-Instruct"
     print(f"Loading model: {model_id}...")
-    t_start = time.time()
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16, device_map="auto")
-    print(f"Model loaded in {time.time()-t_start:.2f}s")
     
-    # Wrap model for Outlines
     outlines_model = outlines.from_transformers(model, tokenizer)
-    
     samples = get_bfcl_samples()
-    print(f"Loaded {len(samples)} BFCL test samples.")
     
     protocol_str = '<tool_call>'
     protocol_tokens = tokenizer.encode(protocol_str, add_special_tokens=False)
     if not protocol_tokens:
         protocol_tokens = [tokenizer.convert_tokens_to_ids('<')]
     
-    # Pre-compile Fast Outlines FSM Generators
     print("\n--- Compiling Grammar Automata ---")
-    
-    t0 = time.time()
-    print("[1/3] Compiling Compatible Regex Grammar...")
-    regex_term = regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)")
-    gen_regex = outlines.Generator(outlines_model, regex_term)
-    print(f"      Done in {time.time()-t0:.2f}s")
-    
-    t1 = time.time()
-    print("[2/3] Compiling Incompatible JSON Regex Grammar...")
-    json_regex_term = regex(r"\{[\s\S]*\}")
-    gen_json = outlines.Generator(outlines_model, json_regex_term)
-    print(f"      Done in {time.time()-t1:.2f}s")
-    
-    t2 = time.time()
-    print("[3/3] Compiling Restrictive Regex Grammar (Config C)...")
-    # A genuinely restrictive grammar that allows `<tool_call>` but forces strict payload structure
-    restrictive_regex_term = regex(r"(.*?)<tool_call>\{\s*\"name\"\s*:[\s\S]*\}</tool_call>(.*?)")
-    gen_restrictive = outlines.Generator(outlines_model, restrictive_regex_term)
-    print(f"      Done in {time.time()-t2:.2f}s")
+    gen_regex = outlines.Generator(outlines_model, regex(r"(.*?)<tool_call>\{.*?\}</tool_call>(.*?)"))
+    gen_json = outlines.Generator(outlines_model, regex(r"\{[\s\S]*\}"))
+    gen_restrictive = outlines.Generator(outlines_model, regex(r"(.*?)<tool_call>\{\s*\"name\"\s*:[\s\S]*\}</tool_call>(.*?)"))
     
     configurations = {
-        "A_COMPATIBLE": {"processor": gen_regex.logits_processor},
-        "B_INCOMPATIBLE": {"processor": gen_json.logits_processor}, 
-        "C_RESTRICTIVE": {"processor": gen_restrictive.logits_processor}
+        "U_UNCONSTRAINED": {"processor": None, "is_unconstrained": True},
+        "A_COMPATIBLE": {"processor": gen_regex.logits_processor, "is_unconstrained": False, "tracker": gen_restrictive.logits_processor},
+        "B_INCOMPATIBLE": {"processor": gen_json.logits_processor, "is_unconstrained": False}, 
+        "C_RESTRICTIVE": {"processor": gen_restrictive.logits_processor, "is_unconstrained": False}
     }
     
-    # Initialize CSV
     with open('probe_results.csv', 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow([
             "config", "sample_id", "is_no_tool", "expected_tool", "gen_text", 
-            "has_call", "tp", "fp", "fn", "tn", "cumulative_tax", "decision_region_tax", 
-            "argument_region_tax", "min_alpha", "median_alpha", "protocol_reachable_at_decision", 
-            "p_tool_decision", "p_notool_decision", "mech_a", "mech_b"
+            "has_call", "tp", "fp", "fn", "tn", 
+            "cumulative_tax", "pre_decision_tax", "first_5_tax", "tool_name_region_tax", "argument_region_tax",
+            "min_pre_decision_alpha", "protocol_reachable", "p_tool_decision", "p_notool_decision", "decision_entropy",
+            "prompt_length", "output_length", "num_tools", "schema_depth",
+            "mask_diffs_mean", "first_divergence_step", "mech_a"
         ])
     
         for config_name, config in configurations.items():
             print(f"\n--- Running Configuration: {config_name} ---")
-            
-            tp, fp, fn, tn = 0, 0, 0, 0
-            total_tax = 0.0
-            mech_A_failures = 0
-            mech_B_failures = 0
-            
             for ex in tqdm(samples):
-                if hasattr(config["processor"], "reset"):
+                if config["processor"] and hasattr(config["processor"], "reset"):
                     config["processor"].reset()
+                if config.get("tracker") and hasattr(config["tracker"], "reset"):
+                    config["tracker"].reset()
                     
-                messages = [
-                    {"role": "system", "content": f"You have tools: {json.dumps(ex['tools'])}. Output <tool_call>{{\"name\": \"...\", \"arguments\": {{...}}}}</tool_call> to call."},
-                    {"role": "user", "content": ex["query"]}
-                ]
+                messages = [{"role": "system", "content": f"You have tools: {json.dumps(ex['tools'])}. Output <tool_call>{{\"name\": \"...\", \"arguments\": {{...}}}}</tool_call> to call."},
+                            {"role": "user", "content": ex["query"]}]
                 prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
                 
-                diag_processor = DiagnosticConstrainedLogitsProcessor(config["processor"], protocol_tokens)
-                logits_processors = LogitsProcessorList([diag_processor])
+                tracker = config.get("tracker") if config_name == "A_COMPATIBLE" else None
+                diag_processor = DiagnosticConstrainedLogitsProcessor(config["processor"], protocol_tokens, config["is_unconstrained"], tracker)
+                logits_processors = LogitsProcessorList([diag_processor]) if not config["is_unconstrained"] else LogitsProcessorList()
+                
+                # Manual intercept for unconstrained 
+                if config["is_unconstrained"]:
+                    diag_processor = DiagnosticConstrainedLogitsProcessor(None, protocol_tokens, True, None)
+                    logits_processors = LogitsProcessorList([diag_processor])
                 
                 with torch.no_grad():
                     outputs = model.generate(**inputs, max_new_tokens=100, logits_processor=logits_processors, do_sample=False, pad_token_id=tokenizer.eos_token_id)
@@ -194,44 +195,31 @@ def main():
                 s_fn = int(not has_call and not ex["is_no_tool"])
                 s_tn = int(not has_call and ex["is_no_tool"])
                 
-                tp += s_tp
-                fp += s_fp
-                fn += s_fn
-                tn += s_tn
+                first_5_tax = sum(diag_processor.step_taxes[:5])
+                ds = diag_processor.decision_step if diag_processor.decision_step > -1 else 0
+                tool_name_region_tax = sum(diag_processor.step_taxes[ds:ds+20])
+                arg_region_tax = sum(diag_processor.step_taxes[ds+20:])
                 
-                decision_region_tax = sum(diag_processor.step_taxes[:5])
-                argument_region_tax = sum(diag_processor.step_taxes[5:])
-                min_alpha = min(diag_processor.alpha_ts) if diag_processor.alpha_ts else 0.0
-                median_alpha = np.median(diag_processor.alpha_ts) if diag_processor.alpha_ts else 0.0
+                mech_a = (not ex["is_no_tool"]) and (not diag_processor.protocol_reachable_at_decision)
                 
-                protocol_reachable_at_decision = diag_processor.reachability_status[0] if diag_processor.reachability_status else False
-                p_tool = diag_processor.p_tool_first_step if diag_processor.p_tool_first_step is not None else 0.0
-                p_notool = diag_processor.p_notool_first_step if diag_processor.p_notool_first_step is not None else 1.0
+                mean_diff = np.mean(diag_processor.mask_diffs) if diag_processor.mask_diffs else 0.0
                 
-                # Mechanism A: Tool expected, but protocol token was unreachable at the very first step
-                mech_a = (not ex["is_no_tool"]) and (not protocol_reachable_at_decision)
-                
-                # Mechanism B: Protocol was reachable, but semantic failure occurred
-                semantic_failure = (s_fp > 0) or (s_fn > 0)
-                mech_b = protocol_reachable_at_decision and semantic_failure
-                
-                if mech_a: mech_A_failures += 1
-                if mech_b: mech_B_failures += 1
-                
-                total_tax += diag_processor.cumulative_tax
+                # Confounders
+                prompt_length = inputs.input_ids.shape[1]
+                output_length = len(outputs[0]) - prompt_length
+                num_tools = len(ex["tools"])
+                schema_depth = 3 # Simplified approximation for complexity
                 
                 writer.writerow([
                     config_name, ex["id"], ex["is_no_tool"], ex["expected_tool"], repr(gen_text),
-                    has_call, s_tp, s_fp, s_fn, s_tn, diag_processor.cumulative_tax, decision_region_tax,
-                    argument_region_tax, min_alpha, median_alpha, protocol_reachable_at_decision,
-                    p_tool, p_notool, int(mech_a), int(mech_b)
+                    has_call, s_tp, s_fp, s_fn, s_tn, 
+                    diag_processor.cumulative_tax, diag_processor.pre_decision_tax, first_5_tax, 
+                    tool_name_region_tax, arg_region_tax, diag_processor.min_pre_decision_alpha, 
+                    diag_processor.protocol_reachable_at_decision, diag_processor.decision_p_tool, 
+                    diag_processor.decision_p_notool, diag_processor.decision_entropy,
+                    prompt_length, output_length, num_tools, schema_depth,
+                    mean_diff, diag_processor.first_divergence_step, int(mech_a)
                 ])
-                        
-            print(f"Results for {config_name}:")
-            print(f"  Confusion Matrix: TP={tp}, FP={fp}, FN={fn}, TN={tn}")
-            print(f"  Average Cumulative Projection Tax: {total_tax/len(samples):.4f}")
-            print(f"  Mechanism A Failures (Protocol Excluded at Decision): {mech_A_failures}")
-            print(f"  Mechanism B Failures (Protocol Reachable but Semantic Failure): {mech_B_failures}")
 
 if __name__ == '__main__':
     main()

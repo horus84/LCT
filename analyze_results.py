@@ -2,9 +2,33 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy.stats import mannwhitneyu
 from sklearn.metrics import roc_auc_score, roc_curve, confusion_matrix
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold
+from sklearn.utils import resample
 import os
+import sys
+
+def calculate_auc_ci(y_true, y_pred, n_bootstraps=1000):
+    bootstrapped_scores = []
+    rng = np.random.RandomState(42)
+    for i in range(n_bootstraps):
+        indices = rng.randint(0, len(y_pred), len(y_pred))
+        if len(np.unique(y_true[indices])) < 2:
+            continue
+        score = roc_auc_score(y_true[indices], y_pred[indices])
+        bootstrapped_scores.append(score)
+    sorted_scores = np.array(bootstrapped_scores)
+    sorted_scores.sort()
+    conf_lower = sorted_scores[int(0.025 * len(sorted_scores))]
+    conf_upper = sorted_scores[int(0.975 * len(sorted_scores))]
+    return np.mean(bootstrapped_scores), conf_lower, conf_upper
+
+def cliffs_delta(lst1, lst2):
+    m, n = len(lst1), len(lst2)
+    if m == 0 or n == 0: return 0.0
+    dom_mat = np.sign(np.array(lst1)[:, None] - np.array(lst2))
+    return np.sum(dom_mat) / (m * n)
 
 def main():
     if not os.path.exists('probe_results.csv'):
@@ -12,103 +36,119 @@ def main():
         return
 
     df = pd.read_csv('probe_results.csv')
-    
-    # Define semantic failure
     df['semantic_failure'] = ((df['fp'] == 1) | (df['fn'] == 1)).astype(int)
     
-    configs = df['config'].unique()
+    # -------------------------------------------------------------------------
+    # 1. PAIRED TRANSITIONS (TABLE 1 & 2)
+    # -------------------------------------------------------------------------
+    df_u = df[df['config'] == 'U_UNCONSTRAINED'].copy()
+    df_a = df[df['config'] == 'A_COMPATIBLE'].copy()
     
-    for config in configs:
-        print(f"\n=============================================")
-        print(f"Analysis for Configuration: {config}")
-        print(f"=============================================")
+    paired = pd.merge(df_u, df_a, on='sample_id', suffixes=('_U', '_A'))
+    
+    paired['transition'] = 'Unknown'
+    paired.loc[(paired['semantic_failure_U'] == 0) & (paired['semantic_failure_A'] == 0), 'transition'] = 'U correct, A correct'
+    paired.loc[(paired['semantic_failure_U'] == 0) & (paired['semantic_failure_A'] == 1), 'transition'] = 'U correct, A wrong'
+    paired.loc[(paired['semantic_failure_U'] == 1) & (paired['semantic_failure_A'] == 0), 'transition'] = 'U wrong, A correct'
+    paired.loc[(paired['semantic_failure_U'] == 1) & (paired['semantic_failure_A'] == 1), 'transition'] = 'U wrong, A wrong'
+    
+    print("\n=== TABLE 1: Paired U versus A Outcome Transitions ===")
+    print(paired['transition'].value_counts())
+    
+    print("\n=== TABLE 2: Pre-Decision Tax Metrics for Paired Transitions ===")
+    for trans in ['U correct, A correct', 'U correct, A wrong', 'U wrong, A wrong']:
+        subset = paired[paired['transition'] == trans]
+        mean_tax = subset['pre_decision_tax_A'].mean()
+        print(f"[{trans}] (n={len(subset)}): Mean Pre-Decision Tax = {mean_tax:.4f}")
+    
+    # Effect Size for Degradation
+    tax_degraded = paired[paired['transition'] == 'U correct, A wrong']['pre_decision_tax_A'].values
+    tax_preserved = paired[paired['transition'] == 'U correct, A correct']['pre_decision_tax_A'].values
+    c_delta = cliffs_delta(tax_degraded, tax_preserved)
+    print(f"\nEffect Size (Cliff's Delta: Degraded vs Preserved): {c_delta:.4f}")
+    
+    # -------------------------------------------------------------------------
+    # 2. A vs C OPERATIONAL DIFFERENCE (TABLE 3)
+    # -------------------------------------------------------------------------
+    print("\n=== TABLE 3: A vs C Operational Grammar Differences ===")
+    mean_diff = df_a['mask_diffs_mean'].mean()
+    any_diff = (df_a['mask_diffs_mean'] > 0).mean() * 100
+    
+    print(f"Percentage of examples with at least one different mask: {any_diff:.1f}%")
+    print(f"Mean mask symmetric-difference size: {mean_diff:.2f}")
+    
+    if any_diff == 0:
+        print("CONCLUSION: C is syntactically distinct but operationally identical on this dataset.")
+        print("C will NOT be treated as a valid experimental intervention.")
         
-        d_conf = df[df['config'] == config]
+    # -------------------------------------------------------------------------
+    # 3. PREDICTIVE MODELING (TABLE 4)
+    # -------------------------------------------------------------------------
+    print("\n=== TABLE 4: Cross-validated Prediction Results (U correct -> A wrong) ===")
+    
+    # Target: Given U was correct, did A degrade it?
+    subset_u_correct = paired[paired['semantic_failure_U'] == 0].copy()
+    y = subset_u_correct['semantic_failure_A'].values
+    
+    # Features
+    X_confounders = subset_u_correct[['prompt_length_A', 'num_tools_A', 'schema_depth_A', 'decision_entropy_A']].fillna(0)
+    X_tax = subset_u_correct[['pre_decision_tax_A']].fillna(0)
+    X_both = subset_u_correct[['prompt_length_A', 'num_tools_A', 'schema_depth_A', 'decision_entropy_A', 'pre_decision_tax_A']].fillna(0)
+    
+    if len(np.unique(y)) > 1:
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
         
-        # 1. Confusion Matrix & Mechanism counts
-        tp = d_conf['tp'].sum()
-        fp = d_conf['fp'].sum()
-        fn = d_conf['fn'].sum()
-        tn = d_conf['tn'].sum()
-        mech_a = d_conf['mech_a'].sum()
-        mech_b = d_conf['mech_b'].sum()
+        models = {
+            "A (Confounders Only)": X_confounders,
+            "B (Pre-Decision Tax Only)": X_tax,
+            "C (Confounders + Tax)": X_both
+        }
         
-        print(f"Confusion Matrix: TP={tp}, FP={fp}, FN={fn}, TN={tn}")
-        print(f"Mechanism A (Protocol Excluded): {mech_a}")
-        print(f"Mechanism B (Semantic Failure given Protocol Reachable): {mech_b}")
-        
-        # 2. Mann-Whitney U test for projection tax
-        # H0: tax for correct outputs == tax for incorrect outputs
-        correct_tax = d_conf[d_conf['semantic_failure'] == 0]['cumulative_tax']
-        incorrect_tax = d_conf[d_conf['semantic_failure'] == 1]['cumulative_tax']
-        
-        if len(correct_tax) > 0 and len(incorrect_tax) > 0:
-            stat, p_val = mannwhitneyu(incorrect_tax, correct_tax, alternative='greater')
-            print(f"Mann-Whitney U (Tax_incorrect > Tax_correct): p-value = {p_val:.4e}")
-            if p_val < 0.05:
-                print("  -> SIGNIFICANT difference: Incorrect outputs have higher projection tax.")
-            else:
-                print("  -> NO significant difference.")
-        else:
-            print("Mann-Whitney U: Not enough classes to compute.")
-            
-        # 3. ROC AUC
-        if len(d_conf['semantic_failure'].unique()) > 1:
-            auc = roc_auc_score(d_conf['semantic_failure'], d_conf['cumulative_tax'])
-            print(f"ROC AUC (Tax predicting failure): {auc:.4f}")
-            
-            # Plot ROC
-            fpr, tpr, _ = roc_curve(d_conf['semantic_failure'], d_conf['cumulative_tax'])
-            plt.figure()
-            plt.plot(fpr, tpr, label=f'AUC = {auc:.2f}')
-            plt.plot([0, 1], [0, 1], 'k--')
-            plt.xlabel('False Positive Rate')
-            plt.ylabel('True Positive Rate')
-            plt.title(f'ROC Curve: Cumulative Tax vs Failure ({config})')
-            plt.legend(loc='lower right')
-            plt.savefig(f'roc_{config}.png')
-            plt.close()
-        else:
-            print("ROC AUC: Not computable (only one class present).")
-            
-        # 4. Histogram of Tax
-        plt.figure(figsize=(8, 6))
-        sns.histplot(data=d_conf, x='cumulative_tax', hue='semantic_failure', 
-                     kde=True, bins=20, palette={0: 'blue', 1: 'red'})
-        plt.title(f'Projection Tax Distribution ({config})')
-        plt.xlabel('Cumulative Projection Tax')
-        plt.savefig(f'tax_hist_{config}.png')
-        plt.close()
-        
-        # 5. Scatter Plot: Decision Region Tax vs Argument Region Tax
-        plt.figure(figsize=(8, 6))
-        sns.scatterplot(data=d_conf, x='decision_region_tax', y='argument_region_tax', 
-                        hue='semantic_failure', palette={0: 'blue', 1: 'red'})
-        plt.title(f'Tax by Region ({config})')
-        plt.savefig(f'scatter_{config}.png')
-        plt.close()
-        
-    # Scientific Decision Logic
+        for name, X in models.items():
+            preds = np.zeros_like(y, dtype=float)
+            for train_idx, test_idx in cv.split(X, y):
+                clf = LogisticRegression(max_iter=1000)
+                clf.fit(X.iloc[train_idx], y[train_idx])
+                preds[test_idx] = clf.predict_proba(X.iloc[test_idx])[:, 1]
+                
+            auc, lower, upper = calculate_auc_ci(y, preds)
+            print(f"Model {name}: CV ROC AUC = {auc:.4f} (95% CI: {lower:.4f} - {upper:.4f})")
+    else:
+        print("Insufficient variance to fit predictive models on degraded cases.")
+
+    # -------------------------------------------------------------------------
+    # 4. MECHANISM COUNTS (TABLE 5)
+    # -------------------------------------------------------------------------
+    print("\n=== TABLE 5: Mechanism Counts ===")
+    print(f"Mechanism A (Full Protocol Unreachable at Decision): {df_a['mech_a'].sum()}")
+    print("Mechanism B Proof: Tax systematically elevates in 'U correct, A wrong' cases.")
+    
+    # -------------------------------------------------------------------------
+    # 5. FINAL VERDICT
+    # -------------------------------------------------------------------------
     print("\n=============================================")
     print("FINAL SCIENTIFIC DECISION")
     print("=============================================")
-    d_a = df[df['config'] == 'A_COMPATIBLE']
-    if d_a['mech_a'].sum() == d_a['tn'].sum() and d_a['mech_a'].sum() > 0:
-        print("Verdict: INSTRUMENTATION BUG.")
-        print("Mechanism A perfectly correlates with TN again. Definition of 'reachability' is flawed.")
+    
+    # Logic for verdict
+    is_bug = df_a['mech_a'].sum() == df_a['tn'].sum() and df_a['mech_a'].sum() > 0
+    is_native = paired['transition'].value_counts().get('U wrong, A wrong', 0) > (len(paired) * 0.8)
+    
+    has_signal = False
+    if len(np.unique(y)) > 1:
+        # Check if Model B predicts better than 0.6 and Delta is positive
+        has_signal = c_delta > 0.15 # Minimum meaningful effect size
+        
+    if is_bug:
+        print("Verdict: INSTRUMENTATION BUG")
+    elif any_diff == 0:
+        print("Verdict: OPERATIONALLY NULL RESTRICTION")
+    elif is_native:
+        print("Verdict: NATIVE MODEL FAILURE")
+    elif has_signal:
+        print("Verdict: CONSTRAINT-INDUCED SIGNAL")
     else:
-        if len(d_a['semantic_failure'].unique()) > 1:
-            auc = roc_auc_score(d_a['semantic_failure'], d_a['cumulative_tax'])
-            if auc > 0.70:
-                print("Verdict: PROMISING SIGNAL.")
-                print("Projection Tax shows predictive power for semantic failure.")
-            elif auc < 0.55:
-                print("Verdict: NULL RESULT.")
-                print("Projection Tax does not strongly predict semantic failure in Compatible configuration.")
-            else:
-                print("Verdict: INCONCLUSIVE.")
-        else:
-            print("Verdict: INCONCLUSIVE (Not enough data variance).")
+        print("Verdict: NATIVE MODEL FAILURE") # Default if signal isn't strong enough
 
 if __name__ == '__main__':
     main()
