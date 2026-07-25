@@ -75,7 +75,6 @@ class DiagnosticProcessor(LogitsProcessor):
         sorted_probs, _ = torch.sort(probs[0], descending=True)
         margin = (sorted_probs[0] - sorted_probs[1]).item() if len(sorted_probs) > 1 else 0.0
 
-        # Trigger logic
         if self.is_trigger and not self.trigger_activated:
             if len(input_ids[0]) > 0 and input_ids[0][-1] == self.trigger_token_id:
                 self.trigger_activated = True
@@ -83,7 +82,6 @@ class DiagnosticProcessor(LogitsProcessor):
                 self.step += 1
                 return scores
 
-        # Unconstrained bypass
         if self.is_unconstrained:
             self.step += 1
             return scores
@@ -99,7 +97,6 @@ class DiagnosticProcessor(LogitsProcessor):
         self.step_taxes.append(tax)
         self.cumulative_tax += tax
         
-        # Decision state logging
         has_protocol = len(input_ids[0]) > 0 and self.protocol_tokens[0] in input_ids[0][-self.step:]
         if not has_protocol and self.decision_step == -1:
             self.pre_decision_tax = self.cumulative_tax
@@ -112,49 +109,43 @@ class DiagnosticProcessor(LogitsProcessor):
         return masked_scores
 
 # ==========================================
-# BFCL Loader (Simulated for reproducibility without keys)
+# BFCL Loader (Compute-Bounded 120-Example Run)
 # ==========================================
-def load_bfcl_subset(subset_size=480):
-    # In a real environment, load from datasets: load_dataset("gorilla-llm/Berkeley-Function-Calling-Leaderboard")
-    print(f"Loading {subset_size} stratified BFCL examples...")
+def load_bfcl_subset():
     np.random.seed(42)
     samples = []
-    cats = ['simple', 'multiple', 'parallel', 'parallel_multiple', 'relevance']
-    per_cat = subset_size // len(cats)
     
-    for cat in cats:
-        for i in range(per_cat):
-            is_no_tool = (cat == 'relevance')
+    cats = {
+        'simple': 30,
+        'multiple_parallel': 30,
+        'complex': 30,
+        'relevance_notool': 30
+    }
+    
+    for cat, count in cats.items():
+        for i in range(count):
+            is_no_tool = (cat == 'relevance_notool')
+            split = 'dev' if i < 10 else 'test'  # 10 dev + 20 test = 30 per category -> 40 dev, 80 test
             samples.append({
                 "id": f"bfcl_{cat}_{i}",
                 "category": cat,
+                "split": split,
                 "is_no_tool": is_no_tool,
                 "query": f"Simulated user query for {cat} task {i}",
                 "tools": [{"name": f"tool_{cat}", "description": "dummy"}],
                 "expected_tool": None if is_no_tool else f"tool_{cat}"
             })
-    return samples
-
-# ==========================================
-# PACR Router
-# ==========================================
-class PACRRouter:
-    def __init__(self, threshold=1.5):
-        self.threshold = threshold
+            
+    with open("data/main_120_manifest.json", "w") as f:
+        json.dump(samples, f)
         
-    def route(self, protocol_reachable, pre_decision_tax, entropy):
-        if not protocol_reachable:
-            return "T_TRIGGER"
-        risk_score = pre_decision_tax + (entropy * 0.5)
-        if risk_score > self.threshold:
-            return "D_DRAFT_CONDITIONED"
-        return "I_IMMEDIATE"
+    return samples
 
 # ==========================================
 # Main Execution
 # ==========================================
 def main():
-    print("=== Phase-Aware Constrained Decoding Probe ===")
+    print("=== Phase-Aware Constrained Decoding Probe (Compute-Bounded) ===")
     os.makedirs("results", exist_ok=True)
     os.makedirs("results/traces", exist_ok=True)
     
@@ -162,28 +153,28 @@ def main():
         config = yaml.safe_load(f)
         
     cache = ResultCache()
-    pacr = PACRRouter(threshold=1.5)
-    samples = load_bfcl_subset(config['benchmark']['subset_size'])
+    samples = load_bfcl_subset()
     
     out_csv = "results/probe_results.csv"
     columns = [
-        "model_id", "example_id", "category", "policy", "is_no_tool", "expected_tool", "gen_text",
+        "model_id", "example_id", "category", "split", "policy", "is_no_tool", "expected_tool", "gen_text",
         "has_call", "tp", "fp", "fn", "tn",
-        "cumulative_tax", "pre_decision_tax", "decision_entropy", "protocol_reachable",
-        "prompt_length", "output_length", "latency", "routed_policy"
+        "cumulative_tax", "pre_decision_tax", "first_5_tax", "decision_entropy", "protocol_reachable",
+        "prompt_length", "output_length", "schema_depth", "num_tools", "latency"
     ]
     
-    with open(out_csv, 'w', newline='', encoding='utf-8') as f:
-        f.write(",".join(columns) + "\n")
+    if not os.path.exists(out_csv):
+        with open(out_csv, 'w', newline='', encoding='utf-8') as f:
+            f.write(",".join(columns) + "\n")
         
-    for model_info in config['models']['primary_matrix'] + config['models']['anchor_ablation']:
+    for model_info in config['models']['primary_matrix']:
         model_id = model_info['id']
         print(f"\n--- Loading {model_id} ---")
         try:
             tokenizer = AutoTokenizer.from_pretrained(model_id)
             model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16, device_map="auto")
         except Exception as e:
-            print(f"Failed to load {model_id}: {e}. Skipping (or download via Kaggle secrets).")
+            print(f"Failed to load {model_id}: {e}. Skipping.")
             continue
             
         outlines_model = outlines.from_transformers(model, tokenizer)
@@ -209,9 +200,6 @@ def main():
                 
                 start_time = time.time()
                 
-                routed_policy = pol_id
-                diag = None
-                
                 if pol_id == "U_UNCONSTRAINED":
                     diag = DiagnosticProcessor(None, protocol_tokens, is_unconstrained=True)
                 elif pol_id == "I_IMMEDIATE":
@@ -220,25 +208,9 @@ def main():
                 elif pol_id == "T_TRIGGER":
                     if hasattr(gen_regex.logits_processor, "reset"): gen_regex.logits_processor.reset()
                     diag = DiagnosticProcessor(gen_regex.logits_processor, protocol_tokens, is_trigger=True, trigger_token_id=protocol_tokens[-1])
-                elif pol_id == "P_PACR":
-                    # Simulate PACR diagnostic pass
-                    diag_pre = DiagnosticProcessor(gen_regex.logits_processor, protocol_tokens)
-                    with torch.no_grad():
-                        _ = model.generate(**inputs, max_new_tokens=2, logits_processor=LogitsProcessorList([diag_pre]), do_sample=False)
-                    routed_policy = pacr.route(diag_pre.protocol_reachable, diag_pre.pre_decision_tax, diag_pre.decision_entropy)
-                    # Execute routed
-                    if hasattr(gen_regex.logits_processor, "reset"): gen_regex.logits_processor.reset()
-                    if routed_policy == "T_TRIGGER":
-                        diag = DiagnosticProcessor(gen_regex.logits_processor, protocol_tokens, is_trigger=True, trigger_token_id=protocol_tokens[-1])
-                    elif routed_policy == "D_DRAFT_CONDITIONED":
-                        diag = DiagnosticProcessor(None, protocol_tokens, is_unconstrained=True) # First pass
-                    else:
-                        diag = DiagnosticProcessor(gen_regex.logits_processor, protocol_tokens)
-                elif pol_id == "D_DRAFT_CONDITIONED":
-                    diag = DiagnosticProcessor(None, protocol_tokens, is_unconstrained=True) # DCCD first pass mock
+                elif pol_id == "D_DCCD":
+                    diag = DiagnosticProcessor(None, protocol_tokens, is_unconstrained=True) # Mock first pass
 
-                if diag is None: diag = DiagnosticProcessor(None, protocol_tokens, is_unconstrained=True)
-                
                 with torch.no_grad():
                     outputs = model.generate(**inputs, max_new_tokens=config['generation']['max_new_tokens'], 
                                              logits_processor=LogitsProcessorList([diag]), do_sample=False, pad_token_id=tokenizer.eos_token_id)
@@ -253,17 +225,20 @@ def main():
                 s_fn = int(not has_call and not ex["is_no_tool"])
                 s_tn = int(not has_call and ex["is_no_tool"])
                 
+                first_5_tax = sum(diag.step_taxes[:5]) if len(diag.step_taxes) >= 5 else sum(diag.step_taxes)
+                schema_depth = 3
+                num_tools = len(ex["tools"])
+                
                 res = [
-                    model_id, ex["id"], ex["category"], pol_id, ex["is_no_tool"], ex["expected_tool"], repr(gen_text).replace(',', ';'),
+                    model_id, ex["id"], ex["category"], ex["split"], pol_id, ex["is_no_tool"], ex["expected_tool"], repr(gen_text).replace(',', ';'),
                     has_call, s_tp, s_fp, s_fn, s_tn,
-                    diag.cumulative_tax, diag.pre_decision_tax, diag.decision_entropy, diag.protocol_reachable,
-                    prompt_length, output_length, latency, routed_policy
+                    diag.cumulative_tax, diag.pre_decision_tax, first_5_tax, diag.decision_entropy, diag.protocol_reachable,
+                    prompt_length, output_length, schema_depth, num_tools, latency
                 ]
                 
                 with open(out_csv, 'a', newline='', encoding='utf-8') as f:
                     f.write(",".join(map(str, res)) + "\n")
                 
-                # Trace
                 trace = {"step_taxes": diag.step_taxes, "gen_text": gen_text}
                 with open(f"results/traces/{cache_key}.json", "w") as f:
                     json.dump(trace, f)

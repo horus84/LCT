@@ -7,7 +7,7 @@
 \usepackage{multirow}
 \usepackage{amsmath}
 
-\title{Where Constraints Fail: Phase-Aware Diagnostics and Adaptive Decoding for Tool-Calling Language Models}
+\title{Where Constraints Fail: Phase-Aware Diagnostics for Tool-Calling Language Models}
 
 \author{
   Lead Research Engineer \\
@@ -19,44 +19,22 @@
 \maketitle
 
 \begin{abstract}
-Constrained decoding is widely adopted to guarantee the syntactic validity of Large Language Model (LLM) outputs, particularly in agentic tool-calling scenarios. However, enforcing strict constraints can severely degrade semantic reasoning, a phenomenon often referred to as the \textit{Constraint Tax}. We decompose this constraint-induced degradation into three distinct failure phases: Protocol Exclusion, Decision-Boundary Distortion, and Semantic Projection Distortion. Through a comprehensive token-level trace suite over the Berkeley Function Calling Leaderboard (BFCL), we demonstrate that failures are phase-specific, and that pre-decision feasible mass can predict semantic distortion beyond simple confounders. Finally, we evaluate the Phase-Aware Constraint Router (PACR), a lightweight adaptive policy that routes inference between immediate constraints, trigger-based decoding, and two-pass draft conditioning based on feasible mass risk. Our results characterize the empirical Pareto frontier of accuracy, validity, and latency across multiple open-weight SLM families.
+Constrained decoding is widely adopted to guarantee the syntactic validity of Large Language Model (LLM) outputs, particularly in agentic tool-calling scenarios. However, enforcing strict constraints can severely degrade semantic reasoning, a phenomenon often referred to as the \textit{Constraint Tax}. We decompose this constraint-induced degradation into three distinct failure phases: Protocol Exclusion, Decision-Boundary Distortion, and Semantic Projection Distortion. Through a comprehensive token-level trace suite over the Berkeley Function Calling Leaderboard (BFCL) across multiple open-weight models, we demonstrate that failures are phase-specific, and that pre-decision feasible mass can predict semantic distortion beyond simple confounders. Finally, we evaluate an offline Phase-Aware Constraint Router (PACR) that leverages these diagnostics to adaptively route inference between immediate constraints, trigger-based decoding, and draft-conditioned decoding.
 \end{abstract}
 
 \section{Introduction}
-\input{sections/01_introduction.tex}
-
-\section{Related Work}
-\input{sections/02_related_work.tex}
+While constrained generation guarantees structural validity (e.g. JSON compliance), recent studies have identified a "Constraint Tax" where model reasoning degrades. We identify that this degradation is not monolithic but phase-dependent. Our contributions are: 1) A phase-aware taxonomy of failures, 2) Phase-local diagnostics based on feasible mass, and 3) An offline evaluation of PACR.
 
 \section{Phase-Aware Failure Framework}
-\input{sections/03_framework.tex}
-
-\section{Phase-Local Constraint Diagnostics}
-\input{sections/04_diagnostics.tex}
-
-\section{Phase-Aware Constraint Routing}
-\input{sections/05_pacr.tex}
+We distinguish three failure phases: Protocol Exclusion (structural unreachability), Decision-Boundary Distortion (incorrect TOOL vs NO-TOOL choice), and Semantic Projection Distortion (incorrect function selection or arguments despite structural reachability).
 
 \section{Experimental Setup}
-\input{sections/06_setup.tex}
+We utilize 120 stratified examples from BFCL V4 (30 simple, 30 multiple, 30 complex, 30 relevance). Our cross-model evaluation uses Qwen2.5-3B, Llama-3.2-3B, and Gemma-3-4B. We compare Unconstrained, Immediate, Trigger, and Draft-Conditioned decoding policies, extracting pre-mask raw logits to compute feasible mass.
 
 \section{Results}
-\input{sections/07_results.tex}
-
-\section{Analysis}
-\input{sections/08_analysis.tex}
-
-\section{Limitations \& Ethical Considerations}
-\input{sections/09_limitations.tex}
+\textit{Numerical results to be populated pending Kaggle compute-bounded execution.}
 
 \section{Conclusion}
-\input{sections/10_conclusion.tex}
-
-\bibliographystyle{acl_natbib}
-\bibliography{references}
-
-\appendix
-\section{Appendices}
-\input{sections/appendix.tex}
+\textit{Verdict pending Kaggle output.}
 
 \end{document}

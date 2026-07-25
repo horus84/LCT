@@ -1,9 +1,9 @@
-# Frozen Experiment Preregistration Configuration
+# Frozen Experiment Preregistration Configuration - COMPUTE BOUNDED RUN
 
 experiment:
-  title: "Where Constraints Fail: Phase-Aware Diagnostics and Adaptive Decoding for Tool-Calling Language Models"
+  title: "Where Constraints Fail: Phase-Aware Diagnostics for Tool-Calling Language Models"
   random_seed: 42
-  budget: "T4 GPU x2, Max 48 hours"
+  budget: "T4 GPU x2, Compute-Bounded 120-Example Run"
   
 models:
   primary_matrix:
@@ -13,23 +13,19 @@ models:
       revision: "main"
     - id: "google/gemma-3-4b-it"
       revision: "main"
-  anchor_ablation:
-    - id: "Qwen/Qwen2.5-1.5B-Instruct"
-      revision: "main"
       
 benchmark:
   name: "Berkeley Function Calling Leaderboard (BFCL)"
   version: "V4" 
-  subset_size: 480
+  subset_size: 120
   categories:
-    - "simple"
-    - "multiple"
-    - "parallel"
-    - "parallel_multiple"
-    - "relevance"
+    simple: 30
+    multiple_parallel: 30
+    complex: 30
+    relevance_notool: 30
   split:
-    development_ratio: 0.3
-    test_ratio: 0.7
+    development_count: 40
+    test_count: 80
 
 generation:
   max_new_tokens: 512
@@ -47,23 +43,15 @@ policies:
   - id: "T_TRIGGER"
     type: "constrained_post_trigger"
     trigger_token: "<tool_call>"
-  - id: "D_DRAFT_CONDITIONED"
+  - id: "D_DCCD"
     type: "two_pass_dccd"
-  - id: "P_PACR"
-    type: "adaptive_router"
 
-pacr_routing:
-  features: 
-    - "pre_decision_tax"
-    - "decision_entropy"
-    - "decision_margin"
-    - "schema_depth"
-    - "num_tools"
-  model: "LogisticRegression"
-  calibration: "development_set_only"
-  threshold_target: "Max 30% DCCD usage"
-  
 ablations:
-  - "Protocol Compatibility Control"
-  - "Grammar Strictness (Permissive vs Restrictive)"
-  - "PACR Feature Elimination"
+  anchor_model: "Qwen/Qwen2.5-3B-Instruct"
+  subset_size: 60
+  conditions:
+    - "Compatible protocol"
+    - "Deliberately incompatible protocol"
+    - "Incompatible repaired via trigger"
+    - "Standard grammar"
+    - "Restrictive grammar"
