@@ -1,0 +1,62 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[hyperref]{acl2023}
+\usepackage{times}
+\usepackage{latexsym}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsmath}
+
+\title{Where Constraints Fail: Phase-Aware Diagnostics and Adaptive Decoding for Tool-Calling Language Models}
+
+\author{
+  Lead Research Engineer \\
+  ProjectTax \\
+  \texttt{repository: horus84/ProjectTax}
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Constrained decoding is widely adopted to guarantee the syntactic validity of Large Language Model (LLM) outputs, particularly in agentic tool-calling scenarios. However, enforcing strict constraints can severely degrade semantic reasoning, a phenomenon often referred to as the \textit{Constraint Tax}. We decompose this constraint-induced degradation into three distinct failure phases: Protocol Exclusion, Decision-Boundary Distortion, and Semantic Projection Distortion. Through a comprehensive token-level trace suite over the Berkeley Function Calling Leaderboard (BFCL), we demonstrate that failures are phase-specific, and that pre-decision feasible mass can predict semantic distortion beyond simple confounders. Finally, we evaluate the Phase-Aware Constraint Router (PACR), a lightweight adaptive policy that routes inference between immediate constraints, trigger-based decoding, and two-pass draft conditioning based on feasible mass risk. Our results characterize the empirical Pareto frontier of accuracy, validity, and latency across multiple open-weight SLM families.
+\end{abstract}
+
+\section{Introduction}
+\input{sections/01_introduction.tex}
+
+\section{Related Work}
+\input{sections/02_related_work.tex}
+
+\section{Phase-Aware Failure Framework}
+\input{sections/03_framework.tex}
+
+\section{Phase-Local Constraint Diagnostics}
+\input{sections/04_diagnostics.tex}
+
+\section{Phase-Aware Constraint Routing}
+\input{sections/05_pacr.tex}
+
+\section{Experimental Setup}
+\input{sections/06_setup.tex}
+
+\section{Results}
+\input{sections/07_results.tex}
+
+\section{Analysis}
+\input{sections/08_analysis.tex}
+
+\section{Limitations \& Ethical Considerations}
+\input{sections/09_limitations.tex}
+
+\section{Conclusion}
+\input{sections/10_conclusion.tex}
+
+\bibliographystyle{acl_natbib}
+\bibliography{references}
+
+\appendix
+\section{Appendices}
+\input{sections/appendix.tex}
+
+\end{document}

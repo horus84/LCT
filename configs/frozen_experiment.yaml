@@ -1,0 +1,69 @@
+# Frozen Experiment Preregistration Configuration
+
+experiment:
+  title: "Where Constraints Fail: Phase-Aware Diagnostics and Adaptive Decoding for Tool-Calling Language Models"
+  random_seed: 42
+  budget: "T4 GPU x2, Max 48 hours"
+  
+models:
+  primary_matrix:
+    - id: "Qwen/Qwen2.5-3B-Instruct"
+      revision: "main" 
+    - id: "meta-llama/Llama-3.2-3B-Instruct"
+      revision: "main"
+    - id: "google/gemma-3-4b-it"
+      revision: "main"
+  anchor_ablation:
+    - id: "Qwen/Qwen2.5-1.5B-Instruct"
+      revision: "main"
+      
+benchmark:
+  name: "Berkeley Function Calling Leaderboard (BFCL)"
+  version: "V4" 
+  subset_size: 480
+  categories:
+    - "simple"
+    - "multiple"
+    - "parallel"
+    - "parallel_multiple"
+    - "relevance"
+  split:
+    development_ratio: 0.3
+    test_ratio: 0.7
+
+generation:
+  max_new_tokens: 512
+  do_sample: false # Greedy decoding mandatory
+  temperature: null
+  top_p: null
+  top_k: null
+  dtype: "float16"
+
+policies:
+  - id: "U_UNCONSTRAINED"
+    type: "native"
+  - id: "I_IMMEDIATE"
+    type: "constrained_start"
+  - id: "T_TRIGGER"
+    type: "constrained_post_trigger"
+    trigger_token: "<tool_call>"
+  - id: "D_DRAFT_CONDITIONED"
+    type: "two_pass_dccd"
+  - id: "P_PACR"
+    type: "adaptive_router"
+
+pacr_routing:
+  features: 
+    - "pre_decision_tax"
+    - "decision_entropy"
+    - "decision_margin"
+    - "schema_depth"
+    - "num_tools"
+  model: "LogisticRegression"
+  calibration: "development_set_only"
+  threshold_target: "Max 30% DCCD usage"
+  
+ablations:
+  - "Protocol Compatibility Control"
+  - "Grammar Strictness (Permissive vs Restrictive)"
+  - "PACR Feature Elimination"
