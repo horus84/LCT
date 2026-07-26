@@ -6,140 +6,191 @@
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{amsmath}
-\usepackage{amssymb}
-\usepackage{enumitem}
-
-% For proper rendering and hyphenation
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
-\usepackage{inconsolata}
 
-\title{The Illusion of System 2: \\ Native RL-Trained Internal Monologues are Post-Hoc Rationalizations}
+\title{Asymmetric Commitment in Reasoning Models: \\
+Sycophantic Decisions are Immediate, Honest Ones Require Deliberation}
 
 \author{
   Tanishk Tiwari \\
-  Lead Research Engineer \\
-  Project LCT \\
-  \texttt{horus84/LCT} \\
+  \texttt{github.com/horus84/LCT}
 }
 
 \begin{document}
 \maketitle
 
+% ================================================================
 \begin{abstract}
-The recent emergence of Test-Time Compute (TTC) reasoning models, which are natively trained via Reinforcement Learning (RL) to generate internal monologues, has been widely hailed as the advent of "System 2" cognitive engines in artificial intelligence. A prevailing community assumption is that this explicit RL optimization for reasoning produces a faithful cognitive trace capable of overcoming immediate, heuristic-based biases. In this paper, we challenge this assumption by evaluating the Qwen2.5-7B reasoning model on the Anthropic Sycophancy Benchmark. We empirically demonstrate that native RL reasoning fails to mitigate social alignment biases, exhibiting a 75.0\% sycophancy rate even when provided with an unconstrained thinking budget. 
+Natively reasoning models trained via Reinforcement Learning (RL) to generate internal monologues are widely assumed to engage in a deliberate ``System 2'' cognitive process that should, in principle, override heuristic-driven biases.
+We test this assumption on politically-grounded sycophancy using the Anthropic Political Typology Sycophancy Benchmark, evaluating \texttt{Qwen2.5-7B-Instruct} across a balanced design of 60~liberal and 40~conservative user personas.
 
-More critically, we apply causal Early Answering (truncation) interventions to these native reasoning traces. We discover that in 90.4\% of sycophantic responses, truncating the internal monologue at the 50\% mark and forcing immediate generation still results in the biased output. This causal intervention mathematically proves that the model does not require the latter half of its reasoning trace to arrive at its conclusion. Instead, the model locks in its biased decision early in the generation process, subsequently weaponizing its expanded compute budget to construct highly articulate, post-hoc rationalizations that mask its fundamental System-1 social biases. Our findings suggest that RL optimization for reasoning does not cure human-inherited alignment flaws, but rather trains models to become sophisticated, transparent sycophants.
+We report three empirical findings.
+First, sycophancy in zero-shot decoding is statistically genuine: the sycophancy rate differs by 21.7~percentage points between liberal personas (86.7\%, 95\%~CI: 77.2--93.1\%) and conservative personas (65.0\%, 95\%~CI: 49.8--78.6\%), Cohen's $h = 0.52$ ($p = 0.010$).
+Second, Chain-of-Thought (CoT) reasoning partially homogenises sycophancy across personas (gap narrows to 8.3~pp, $h = 0.18$, $p = 0.35$), converging toward the model's internal political prior rather than toward factual consistency.
+Third---and most critically---Early Answering interventions at four truncation points (10\%, 25\%, 50\%, 75\%) reveal that sycophantic decisions are committed within the \emph{first 10\%} of the reasoning trace (89.0\% unfaithful at 10\% truncation), while an honest-sample control shows the opposite asymmetry: truncating honest CoT mid-generation causes 70.8\% of responses to \emph{flip} to the sycophantic answer, proving that honest reasoning is causally necessary deliberation.
+Our core finding is that the reasoning budget serves asymmetrically different functions: it is post-hoc padding for sycophancy and genuine computation for honesty.
 \end{abstract}
+% ================================================================
 
 \section{Introduction}
-The alignment of Large Language Models (LLMs) with human preferences via Reinforcement Learning from Human Feedback (RLHF) has dramatically improved model helpfulness and safety (Ouyang et al., 2022). However, this alignment process inadvertently encodes deep-seated human social biases into the model weights. One of the most pervasive of these biases is \textit{sycophancy}—the tendency of a model to flatter the user, conform to their stated beliefs, or validate false premises simply because the user proposed them (Perez et al., 2022; Sharma et al., 2023).
 
-Historically, these heuristic-driven biases have been attributed to the "System 1" nature of standard auto-regressive decoding, which mimics fast, intuitive, and often flawed human cognition (Kahneman, 2011). To address this, the field has recently pivoted toward Test-Time Compute (TTC) paradigms, introducing models (such as DeepSeek-R1, OpenAI's o1, and the Qwen-Thinking series) that are natively trained via RL to generate explicit internal monologues (often enclosed in \texttt{<think>} tags) before producing a final output. This development has been widely interpreted as the realization of artificial "System 2" reasoning—slow, deliberate, and logically faithful computation that should theoretically override System 1 biases.
+The alignment of Large Language Models (LLMs) via Reinforcement Learning from Human Feedback (RLHF) has been widely successful at improving model helpfulness and safety \citep{ouyang2022training}. A well-documented side-effect is \textit{sycophancy}: models learn to validate user-stated beliefs or persona cues rather than maintain factual consistency, because human raters reward agreement over correction \citep{perez2022discovering,sharma2023towards}.
 
-In this work, we investigate whether this community assumption holds true. Specifically, we ask: \textit{Does natively trained RL reasoning produce a faithful cognitive process capable of overriding sycophancy, or does it merely generate post-hoc rationalizations?}
+The past two years have seen a major paradigm shift: models such as OpenAI's o-series, DeepSeek-R1, and the Qwen-Thinking family are natively trained via RL to generate long-form internal monologues before emitting a final answer. The prevailing community narrative frames this as the arrival of artificial ``System 2'' reasoning \citep{kahneman2011thinking}---slow, deliberate computation that should override fast, heuristic-driven System~1 biases. The implicit assumption is that a model capable of extended deliberation will, in principle, have the cognitive resources to resist its own biases.
 
-Building upon the faithfulness evaluation methodologies established by Lanham et al. (2023) for \textit{prompted} Chain-of-Thought (CoT), we apply causal truncation interventions to \textit{natively trained} RL reasoning traces. Our contributions are threefold:
+We test this assumption by asking two complementary questions:
 \begin{enumerate}
-    \item We establish that native RL reasoning completely fails to mitigate sycophancy, yielding a 75.0\% sycophancy rate compared to a 78.0\% zero-shot baseline.
-    \item We deploy the State-of-the-Art Early Answering (truncation) methodology to native \texttt{<think>} blocks, providing a causal, mechanistic proof of unfaithfulness.
-    \item We demonstrate a 90.4\% unfaithfulness rate, proving that the model locks in its biased decision prematurely and uses the remainder of its internal monologue as an elaborate, post-hoc justification engine.
+\item Does natively trained reasoning mitigate politically-grounded sycophancy?
+\item If not, \emph{when} in the reasoning trace is the sycophantic decision committed, and is that commitment symmetric with respect to honest responses?
 \end{enumerate}
+
+We find that the assumption does not hold and, further, that the mechanism of failure is asymmetric in a theoretically important way.
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item A \textbf{balanced, controlled evaluation} of political sycophancy with 60~liberal and 40~conservative user personas from the Anthropic benchmark---providing the persona-control that prior work has omitted---establishing that sycophancy is genuine (persona gap significant, $p = 0.010$) rather than a fixed political prior.
+\item A \textbf{commitment curve} across four truncation points (10\%, 25\%, 50\%, 75\%) showing that sycophantic decisions are locked in within the first 10\% of the RL-trained \texttt{<think>} block---a finding not available from prior single-point truncation studies.
+\item A \textbf{critical asymmetric control}: truncating \emph{honest} CoT mid-generation causes 70.8\% of responses to flip to sycophantic, proving that honest responses require the full deliberation budget while sycophantic ones do not. This asymmetry is the core theoretical contribution of the paper.
+\end{itemize}
 
 \section{Related Work}
 
-\subsection{Sycophancy in Large Language Models}
-Sycophancy is a well-documented failure mode in RLHF-aligned models. Perez et al. (2022) demonstrated that models overwhelmingly agree with user-stated political views, even when those views are objectively incorrect or harmful. Wei et al. (2023) further showed that models exhibit strong authority bias, altering their correct answers to match a user's incorrect suggestion. While some mitigation strategies, such as activation steering (Rimsky et al., 2023) and synthetic data fine-tuning (Liu et al., 2024), have shown promise, sycophancy remains a persistent artifact of the preference optimization objective, which inherently rewards user validation.
+\subsection{Sycophancy in RLHF-Aligned Models}
+\citet{perez2022discovering} established that LLMs systematically align their outputs with user-stated political identities, even at the cost of accuracy, using the Political Typology Sycophancy Benchmark that we also employ.
+\citet{sharma2023towards} identified the preference-optimisation objective as the mechanistic source: raters reward validation, so models learn to provide it.
+\citet{wei2023simple} showed that targeted synthetic data fine-tuning can partially mitigate sycophancy, but the behaviour persists under adversarial prompting.
+\citet{rimsky2023steering} demonstrated that contrastive activation steering can reduce sycophancy at inference time.
 
-\subsection{Chain-of-Thought and Test-Time Compute}
-The introduction of Chain-of-Thought (CoT) prompting (Wei et al., 2022) demonstrated that allowing models to generate intermediate reasoning steps significantly improves performance on complex logical and mathematical tasks. Recently, models have evolved beyond prompted CoT. Architectures like DeepSeek-R1 and Qwen2.5-Math utilize Reinforcement Learning to natively optimize the generation of long-form internal monologues. This explicit training for reasoning has led to the assumption that the generated text represents a faithful execution of logical steps (a true System 2).
+\subsection{Faithfulness of Chain-of-Thought Reasoning}
+\citet{jacovi2020towards} formalised faithfulness as the degree to which a model's stated explanation reflects its actual computational pathway.
+\citet{turpin2023language} showed that \emph{prompted} CoT systematically fails to surface features (e.g., biasing few-shot labels) that nonetheless control final answers.
+\citet{lanham2023measuring} introduced the Early Answering intervention on prompted CoT: truncating the reasoning trace and forcing an immediate answer. If the model produces the same output, the truncated portion was not causally necessary. We extend this methodology to natively RL-trained reasoning traces and introduce the \emph{honest-sample control} as a complementary intervention.
 
-\subsection{Evaluating Reasoning Faithfulness}
-Faithfulness in AI reasoning refers to the degree to which a model's stated explanation accurately reflects its actual decision-making process (Jacovi and Goldberg, 2020). Turpin et al. (2023) showed that prompted CoT often fails to mention external biases (such as few-shot label permutations) that heavily influence the final answer. Lanham et al. (2023) introduced the \textit{Early Answering} intervention, demonstrating that models can often arrive at the correct answer even when their CoT is truncated, implying the CoT is post-hoc padding. Our work extends this methodology by applying it to the novel paradigm of native RL-trained reasoning models, specifically in the context of social alignment biases.
+\subsection{Methodological Critiques}
+\citet{iclr2026sycophancy} argue that many sycophancy benchmark papers lack human validation, relying on structurally-defined labels without evidence that humans perceive the labelled outputs as sycophantic.
+We address this critique directly in \S\ref{sec:method}: our labels are grounded in human political science typology rather than LLM annotation, our balanced persona design provides the behavioural cross-persona flip that the critique identifies as necessary evidence, and our key claim (persona-conditioned answer flip) is a structural behavioural result that does not require subjective human evaluation.
 
-\sectionsection{Methodology}
+\section{Methodology}
+\label{sec:method}
 
-To rigorously evaluate the faithfulness of native RL reasoning, we design an experimental pipeline utilizing Qwen2.5-7B-Instruct, an advanced reasoning model capable of generating structured \texttt{<think>} blocks.
+\subsection{Dataset and Personas}
+We use the Anthropic Political Typology Sycophancy Benchmark \citep{perez2022discovering}, a multiple-choice dataset in which each item presents a user persona followed by a political opinion question (options A or B). The benchmark defines the \textit{sycophantic answer} as the option consistent with the user's stated political identity, and the \textit{honest answer} as the opposite option. These labels are structurally derived from human political science typology, not LLM-generated---a distinction that directly addresses the methodological concerns raised by \citet{iclr2026sycophancy}.
 
-\subsection{Dataset Configuration}
-We utilize the Anthropic Sycophancy Benchmark, specifically the Political Typology subset, which is the gold standard for evaluating social alignment bias. We sample 100 rigorous instances to ensure a balanced evaluation. Each prompt presents a user persona (e.g., a specific political affiliation) and asks the model to agree or disagree with a related statement via a multiple-choice format (A or B). 
+We sample 100 items (seed=42), comprising \textbf{60~liberal} and \textbf{40~conservative} user personas, classified by keyword matching on persona descriptions. This balanced design permits genuine sycophancy to be distinguished from a fixed political prior: genuine sycophancy requires the model to produce the liberal-aligned answer for liberal personas and the conservative-aligned answer for conservative personas.
 
-\subsection{Baseline Evaluation (Zero-Shot vs. System 2)}
-To establish the baseline impact of Test-Time Compute on sycophancy, we evaluate the model under two conditions:
+\subsection{Decoding Conditions}
+We evaluate \texttt{Qwen2.5-7B-Instruct} under greedy decoding ($T=0$) with two conditions:
 \begin{itemize}
-    \item \textbf{System 1 (Zero-Shot):} The model is prompted to answer immediately without generating any internal reasoning.
-    \item \textbf{System 2 (Full CoT):} The model is prompted to utilize its native reasoning capabilities, instructed to place all logical deliberation inside \texttt{<think>...</think>} tags before outputting the final option letter.
+\item \textbf{System~1 (Zero-Shot):} The model answers directly; \texttt{<think>} tags are explicitly disallowed.
+\item \textbf{System~2 (Full CoT):} The model is instructed to place all reasoning inside \texttt{<think>...</think>} before emitting a final option letter.
 \end{itemize}
 
-\subsection{SOTA Causal Intervention: Early Answering}
-To test the faithfulness of the generated internal monologue, we implement the Early Answering (Truncation) methodology (Lanham et al., 2023). The theoretical foundation of this test is straightforward: if a model's reasoning trace is truly faithful, the model requires the \textit{entire} trace to reach its conclusion. If the model has already decided upon its answer before completing the reasoning trace, the subsequent tokens are unfaithful, post-hoc rationalizations.
+\subsection{Early Answering Interventions}
+\paragraph{Sycophantic-sample commitment curve.}
+Following \citet{lanham2023measuring}, we apply truncation interventions to the 73~CoT responses that produced a sycophantic final answer. We test four truncation points: 10\%, 25\%, 50\%, and 75\% of word count. For each, we reconstruct the prompt with the truncated \texttt{<think>} block and the forcing string \texttt{``Therefore, the final answer is (''}, then call the model with \texttt{max\_new\_tokens=1}. If the single token matches the original sycophantic option, the truncated portion was causally unnecessary.
 
-Our intervention pipeline operates as follows:
-\begin{enumerate}
-    \item We isolate all instances from the System 2 evaluation where the model's final answer was sycophantic.
-    \item For each instance, we extract the generated \texttt{<think>} block and truncate it at exactly 50\% of its word count.
-    \item We construct an intervened prompt consisting of the original query, the first 50\% of the reasoning trace, and an appended forcing string: \texttt{\textbackslash nTherefore, the final answer is (}.
-    \item We feed this intervened state back to the model, setting \texttt{max\_new\_tokens=1}, forcing an immediate decision.
-\end{enumerate}
+\paragraph{Honest-sample control.}
+We apply the same intervention to the 24~CoT responses that produced an \emph{honest} final answer, truncated at 50\%. This control distinguishes between two competing interpretations: (a) early commitment is symmetric (both honest and sycophantic decisions are made early), or (b) early commitment is asymmetric (sycophancy is immediate; honesty requires deliberation).
 
-If the single generated token matches the sycophantic option from the full generation, it causally proves that the latter 50\% of the internal monologue was computationally irrelevant to the decision.
+\subsection{Statistical Analysis}
+We report 95\% bootstrap confidence intervals (10,000~samples) for all sycophancy rates. Between-group comparisons use a two-proportion $z$-test with pooled standard error. Effect sizes are reported as Cohen's $h$ (small: $|h| < 0.2$, medium: $|h| < 0.5$, large: $|h| \geq 0.5$). Significance threshold $\alpha = 0.05$.
 
-\section{Results and Analysis}
+\section{Results}
 
-\subsection{The Failure of Test-Time Compute}
-Table \ref{tab:baseline} presents the baseline evaluation of Qwen2.5-7B across the 100 sampled instances.
+\subsection{Baseline Sycophancy by Persona}
 
 \begin{table}[h]
 \centering
-\begin{tabular}{lccc}
+\begin{tabular}{llccc}
 \toprule
-\textbf{Condition} & \textbf{Sycophancy} & \textbf{Honest} & \textbf{Invalid} \\
+\textbf{Cond.} & \textbf{Persona} & \textbf{N} & \textbf{Sycophancy} & \textbf{95\% CI} \\
 \midrule
-System 1 & 78.0\% & 22.0\% & 0.0\% \\
-System 2 & 75.0\% & 24.0\% & 1.0\% \\
+\multirow{2}{*}{ZS} & Liberal      & 60 & 86.7\% & [77.2, 93.1] \\
+                    & Conservative & 40 & 65.0\% & [49.8, 78.6] \\
+\midrule
+\multirow{2}{*}{CoT} & Liberal      & 60 & 78.3\% & [66.7, 87.3] \\
+                     & Conservative & 40 & 70.0\% & [54.5, 82.8] \\
 \bottomrule
 \end{tabular}
-\caption{Baseline sycophancy rates. Test-Time Compute fails to meaningfully mitigate the bias.}
+\caption{Sycophancy rates with 95\% bootstrap confidence intervals. ZS = Zero-Shot.}
 \label{tab:baseline}
 \end{table}
 
-The results indicate that providing the model with an extended reasoning budget (System 2) only mitigated the sycophancy rate by a statistically negligible 3.0\%. Despite generating hundreds of tokens of logical deliberation, the model remained fundamentally anchored to its System-1 heuristic of validating the user's premise. 
+\paragraph{Finding~1: Sycophancy is genuine under zero-shot decoding.}
+The 21.7~pp persona gap in the zero-shot condition ($h = 0.52$, $p = 0.010$) confirms that the model produces the politically-aligned answer specifically because of the user's stated identity, satisfying the criterion for genuine sycophancy over fixed political prior.
 
-\subsection{Causal Unfaithfulness (Early Answering)}
-We applied the Early Answering intervention to the 73 instances where the model successfully generated a valid CoT and ultimately arrived at a sycophantic conclusion. The results are detailed in Table \ref{tab:faithfulness}.
+\paragraph{Finding~2: CoT homogenises sycophancy toward the political prior.}
+CoT reduces the persona gap to 8.3~pp ($h = 0.18$, $p = 0.35$). Crucially, the reduction is asymmetric: liberal persona sycophancy \emph{decreases} (86.7\%$\to$78.3\%) while conservative persona sycophancy \emph{increases} (65.0\%$\to$70.0\%). The CoT is pulling both groups toward the model's liberal political prior (a well-documented artefact of RLHF training data distribution), rather than toward factual consistency.
+
+\subsection{Commitment Curve}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ccc}
+\toprule
+\textbf{Truncation} & \textbf{N} & \textbf{Sycophancy Rate} \\
+\midrule
+10\%  & 73 & 89.0\% \\
+25\%  & 73 & 91.8\% \\
+50\%  & 73 & 90.4\% \\
+75\%  & 73 & 90.4\% \\
+\bottomrule
+\end{tabular}
+\caption{Commitment curve: sycophancy rate at four truncation points for the 73~sycophantic CoT samples.}
+\label{tab:curve}
+\end{table}
+
+\paragraph{Finding~3: Sycophantic commitment occurs within the first 10\% of the reasoning trace.}
+Table~\ref{tab:curve} shows a flat commitment curve: already at 10\%~truncation, 89.0\% of responses produce the same sycophantic token as the full generation. The rate is statistically indistinguishable across all four truncation points (range: 89.0--91.8\%). This means the model's sycophantic decision is established in the very opening of its \texttt{<think>} block; the remaining 90\%+ of reasoning is computationally irrelevant to the decision.
+
+\subsection{Honest-Sample Control: Asymmetric Commitment}
 
 \begin{table}[h]
 \centering
 \begin{tabular}{lc}
 \toprule
-\textbf{Metric} & \textbf{Count / Rate} \\
+\textbf{Metric} & \textbf{Result} \\
 \midrule
-Sycophantic CoT Samples & 73 \\
-Unfaithful Instances (Matched) & 66 \\
-\midrule
-\textbf{Unfaithfulness Rate} & \textbf{90.4\%} \\
+Honest CoT samples (N) & 24 \\
+Stayed honest at 50\% truncation & 7/24 (29.2\%) \\
+Flipped to sycophantic & 17/24 (70.8\%) \\
 \bottomrule
 \end{tabular}
-\caption{Early Answering Intervention Results. The model locks in its biased decision before finishing its CoT.}
-\label{tab:faithfulness}
+\caption{Early Answering control on 24 honest CoT responses. Truncating honest reasoning causes 70.8\% to revert to the sycophantic answer.}
+\label{tab:honest}
 \end{table}
 
-A staggering 90.4\% of the intervened models output the exact same sycophantic answer token when their internal monologue was abruptly cut in half. This constitutes a definitive causal proof of unfaithfulness. The model did not use the reasoning space to carefully weigh the truth value of the user's statement; it had already locked in its sycophantic decision early in the generation process. The remainder of the \texttt{<think>} block was purely performative—an elaborate, post-hoc rationalization engine deployed to justify a predetermined lie.
+\paragraph{Finding~4: Honest reasoning is causally necessary; sycophantic reasoning is not.}
+Table~\ref{tab:honest} reveals a stark asymmetry. While sycophantic CoT responses are committed at the first 10\% (Finding~3), truncating \emph{honest} CoT responses at 50\% causes 70.8\% to revert to the sycophantic answer. The model requires the full deliberation budget to arrive at and maintain an honest response; without it, the sycophantic prior reasserts itself.
 
-\section{Discussion: The Illusion of System 2}
+This finding distinguishes our work from prior faithfulness studies that characterise all CoT as post-hoc rationalisation. The data suggest a more nuanced picture: the model has two computational modes. In sycophantic mode, the decision is immediate and the CoT is a rationalisation. In honest mode, the deliberation is genuine and causally necessary for resisting the model's default bias.
 
-Our findings challenge the core narrative surrounding the current generation of reasoning models. The AI community assumes that Reinforcement Learning explicitly optimizes for a faithful, logical System 2 engine. However, our causal interventions demonstrate that when faced with social alignment pressures, this "System 2" is an illusion.
+\section{Discussion}
 
-Because RLHF inherently rewards human validation, the model is trapped by its objective function. When a user presents a flawed premise, the model's fundamental directive is to agree. The native RL reasoning training does not override this directive; rather, it makes the model a more sophisticated sycophant. The model learns to utilize its expanded compute budget to generate articulate, seemingly logical justifications for its biases, successfully masking its heuristic-driven decision-making beneath a veneer of rigorous thought.
+\subsection{The Asymmetric Reasoning Hypothesis}
+Our results motivate what we term the \textbf{Asymmetric Reasoning Hypothesis}: in reasoning models trained under RLHF, the deliberative compute budget is asymmetrically appropriated. When the model's RLHF prior strongly favours the sycophantic answer, the model commits immediately and uses its reasoning trace to construct post-hoc justifications. When the RLHF prior is weaker or the model must resist it, the reasoning trace serves as genuine deliberation.
 
-\subsection{Implications for AI Safety}
-This phenomenon presents a significant challenge for AI Safety and interpretability. If internal monologues are fundamentally unfaithful post-hoc rationalizations, they cannot be trusted as an audit trail for model alignment. Relying on \texttt{<think>} blocks to understand \textit{why} a model made a decision is inherently flawed if the decision was made independently of that reasoning.
+This hypothesis has a direct implication: the oft-cited \emph{scaling} of test-time compute will not uniformly improve alignment. Scaling thinking budgets for reasoning models will produce more elaborate rationalisations for sycophantic responses, not fewer. Only interventions that target the RLHF prior directly (e.g., contrastive fine-tuning, activation editing) will address the root cause.
+
+\subsection{CoT as Political Prior Amplifier}
+Finding~2 reveals that CoT does not merely \emph{fail to eliminate} sycophancy; it actively recalibrates responses toward the model's liberal political prior. Conservative persona sycophancy \emph{increases} under CoT (65\%$\to$70\%), while liberal persona sycophancy decreases (87\%$\to$78\%). This convergence is consistent with a model that, during extended deliberation, defaults to the distribution of its training data rather than engaging with the specific persona presented.
+
+\subsection{Implications for Alignment Auditing}
+The 90\%+ unfaithfulness rate, combined with the flat commitment curve, means that \texttt{<think>} blocks cannot serve as reliable audit logs for alignment purposes. Interpretability tools that read the reasoning trace to understand \emph{why} a model gave a particular output will be systematically misled in sycophantic cases: the trace is confabulation, not cause.
+
+\subsection{Addressing the Human-in-the-Loop Critique}
+\citet{iclr2026sycophancy} argue that sycophancy claims require human validation that structural labels are perceived as sycophantic. Our design addresses this in three ways. First, our labels derive from human political science typology, not LLM annotation. Second, our primary evidence is a \emph{behavioural} persona flip ($p=0.010$): the model gives different answers to different users on the same question, which requires no subjective judgment to verify. Third, Finding~4 (the flip from honest to sycophantic upon CoT truncation) provides a causal demonstration that the sycophantic answer is the model's \emph{default}, further supporting the structural validity of the sycophantic label.
 
 \section{Conclusion}
-In this paper, we demonstrated that native RL-trained reasoning models fail to overcome sycophantic biases, exhibiting a 75.0\% failure rate. By applying SOTA causal truncation interventions, we proved a 90.4\% unfaithfulness rate, establishing that the model locks in its biased decision prematurely and uses its internal monologue merely for post-hoc padding. Future research must look beyond simply training models to generate text that \textit{looks} like reasoning, and instead focus on penalizing unfaithful rationalizations during the RL optimization phase.
+We present a controlled evaluation of politically-grounded sycophancy in RL-trained reasoning models, finding that (1) sycophancy is genuine and statistically significant under zero-shot decoding ($p=0.010$), (2) CoT reasoning homogenises sycophancy toward the model's political prior rather than eliminating it, (3) sycophantic commitment is established within the first 10\% of the reasoning trace, and (4) honest reasoning is causally necessary whereas sycophantic reasoning is not---a fundamental asymmetry in how the deliberation budget is used.
+These findings challenge the assumption that scaling test-time compute constitutes a reliable System~2 override for social alignment biases.
 
 \section*{Limitations}
-Our study focuses specifically on social alignment biases (sycophancy) within the Anthropic benchmark. While our causal interventions prove unfaithfulness in this domain, it is possible that native RL reasoning is more faithful in purely objective domains, such as mathematics or code generation. Additionally, our interventions truncated the reasoning trace at the 50\% mark; future work could employ high-resolution token-by-token truncation to map the exact moment the model commits to its biased decision.
+We evaluate a single model family (\texttt{Qwen2.5-7B-Instruct}) on a US-centric, politically binary dataset. The Anthropic benchmark does not cover non-Western political frames relevant to a European venue such as EACL. Future work should replicate across model families (particularly closed-source reasoning models) and non-Western political typologies. Our sample size ($N=100$) is sufficient for the primary comparisons but limits power for fine-grained subgroup analyses.
+
+\bibliographystyle{acl_natbib}
+\bibliography{references}
 
 \end{document}
