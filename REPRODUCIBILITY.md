@@ -68,3 +68,46 @@ python -m src.analyze_early_answers --input results/early_answer_scores.csv
 ```
 Prints the final commitment trajectory curves and original answer agreement rates.
 
+---
+
+### 6. Cross-Model Replication
+Follow these steps to screen and replicate the findings on Meta-Llama-3.1-8B-Instruct and google/gemma-2-9b-it:
+
+#### Step A: Run Direct screening for Llama & Gemma
+```bash
+python -m src.run_multimodel_generation --config configs/models/llama31_8b.yaml --condition direct
+python -m src.run_multimodel_generation --config configs/models/mistral7b_or_gemma9b.yaml --condition direct
+```
+Verify formatting audits:
+```bash
+python -m src.validate_model_outputs --input results/llama_direct.jsonl
+python -m src.validate_model_outputs --input results/gemma_direct.jsonl
+```
+
+#### Step B: Run CoT replication for Llama & Gemma (if screening is positive)
+```bash
+python -m src.run_multimodel_generation --config configs/models/llama31_8b.yaml --condition cot
+python -m src.run_multimodel_generation --config configs/models/mistral7b_or_gemma9b.yaml --condition cot
+```
+
+#### Step C: Analyze Replication Statistics
+```bash
+python -m src.analyze_cross_model_results --inputs results/llama_direct.jsonl results/llama_cot.jsonl results/gemma_direct.jsonl results/gemma_cot.jsonl
+```
+This produces `results/cross_model_results.csv` and `results/cross_model_statistics.json`.
+
+#### Step D: Compile Comparison Figures & Tables
+```bash
+python -m src.make_cross_model_tables
+python -m src.make_cross_model_figures
+```
+
+---
+
+### 7. Focused Prompt Ablation
+Execute the prompt ablation study (full vs. minimal stance vs. neutral baseline) on Qwen2.5-7B-Instruct:
+```bash
+python -m src.run_prompt_ablation --model-config configs/models/qwen25_7b.yaml --resume
+```
+This output is written to `results/prompt_ablation_results.csv`.
+

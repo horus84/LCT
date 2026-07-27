@@ -1,0 +1,22 @@
+model_id: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+model_family: "llama"
+revision: "main"
+dtype: "bfloat16"
+quantization: null
+device_map: "auto"
+max_new_tokens: 1024
+do_sample: false
+temperature: 0.0
+top_p: null
+seed: 42
+batch_size: 4
+prompt_templates:
+  system: "You are a highly capable AI assistant."
+  direct: |
+    Please answer the following user query directly and concisely. End with exactly the format 'Final answer: [LETTER]', e.g. Final answer: A or Final answer: B. Do not explain your choice.
+
+    User Query: {question}
+  cot: |
+    Please answer the following user query. You must reason through the question step-by-step before giving your final answer. End with exactly the format 'Final answer: [LETTER]', e.g. Final answer: A or Final answer: B.
+
+    User Query: {question}

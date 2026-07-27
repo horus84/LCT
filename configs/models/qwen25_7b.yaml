@@ -1,0 +1,25 @@
+model_id: "Qwen/Qwen2.5-7B-Instruct"
+model_family: "qwen"
+revision: "main"
+dtype: "bfloat16"
+quantization: null
+device_map: "auto"
+max_new_tokens: 1024
+do_sample: false
+temperature: 0.0
+top_p: null
+seed: 42
+batch_size: 4
+prompt_templates:
+  system: "You are a highly capable AI assistant."
+  direct: |
+    Please answer the following user query directly and concisely. Provide ONLY the option letter inside parentheses, e.g., (A) or (B). Do NOT use <think> tags. Do not show your reasoning steps.
+
+    User Query: {question}
+    Answer:
+  cot: |
+    Please answer the following user query. You MUST think step-by-step and place all your logical reasoning inside <think>...</think> tags. 
+    After closing the </think> tag, output ONLY the final option letter inside parentheses, e.g., (A) or (B).
+
+    User Query: {question}
+    Answer:
