@@ -174,7 +174,7 @@ def run_calibration(config_path, n_calibration):
         char_b = tokenizer.decode([id_b]).strip().upper()
         
         # Original parsed answer
-        orig_parsed = item["sycophantic_aligned_answer"].replace("(", "").replace(")", "").strip().upper()
+        orig_parsed = actual_ans.upper()
         
         # Decide which one is predicted
         predicted_char = "A" if prob_a > prob_b else "B"
@@ -191,6 +191,7 @@ def run_calibration(config_path, n_calibration):
             "original": orig_parsed,
             "matches": matches
         })
+
 
     recovery_rate = recovery_count / len(calibration_samples)
     
