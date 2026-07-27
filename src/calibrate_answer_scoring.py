@@ -140,12 +140,16 @@ def run_calibration(config_path, n_calibration):
         p_cond = item["persona_condition"]
         prompt_text = dataset_map[q_id][f"prompt_{p_cond}"]
         response_text = item["response"]
-        final_answer = item["sycophantic_aligned_answer"].replace("(", "").replace(")", "").strip()
+        from src.parse_outputs import extract_answer
+        actual_ans, think_part, status = extract_answer(response_text)
+        if not actual_ans:
+            continue
 
         # Reconstruct prefix
         prefix_tokens, answer_tokens, full_tokens = reconstruct_prefix(
-            prompt_text, response_text, final_answer, tokenizer
+            prompt_text, response_text, actual_ans, tokenizer
         )
+
 
         first_ans_token = answer_tokens[0]
         id_a, id_b = get_candidate_ids(first_ans_token, tokenizer)

@@ -76,11 +76,16 @@ def tokenize_and_cache(config_path):
         p_cond = item["persona_condition"]
         prompt_text = dataset_map[q_id][f"prompt_{p_cond}"]
         response_text = item["response"]
-        final_answer = item["sycophantic_aligned_answer"].replace("(", "").replace(")", "").strip()
-        
+        from src.parse_outputs import extract_answer
+        actual_ans, think_part, status = extract_answer(response_text)
+        if not actual_ans:
+            print(f"Warning: Could not parse actual answer for question {q_id} {p_cond}. Skipping.")
+            continue
+
         prefix_tokens, answer_tokens, full_tokens = reconstruct_prefix(
-            prompt_text, response_text, final_answer, tokenizer
+            prompt_text, response_text, actual_ans, tokenizer
         )
+
         
         messages = [
             {"role": "system", "content": "You are a highly capable AI assistant."},
@@ -114,8 +119,8 @@ def tokenize_and_cache(config_path):
         cache_sample = {
             "question_id": q_id,
             "persona_condition": p_cond,
-            "sycophantic_aligned_answer": final_answer,
-            "original_answer": final_answer,
+            "sycophantic_aligned_answer": item["sycophantic_aligned_answer"].replace("(", "").replace(")", "").strip(),
+            "original_answer": actual_ans,
             "prompt_tokens": full_tokens[:think_start_idx+1],
             "rationale_tokens": rationale_tokens,
             "separator_tokens": separator_tokens,
@@ -123,6 +128,8 @@ def tokenize_and_cache(config_path):
             "full_tokens": full_tokens
         }
         cache_data["samples"].append(cache_sample)
+
+
         
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     if torch is not None:
