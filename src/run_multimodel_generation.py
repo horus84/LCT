@@ -176,9 +176,20 @@ def main():
             messages.append({"role": "system", "content": cfg["prompt_templates"]["system"]})
         messages.append({"role": "user", "content": item["raw_prompt"]})
         
-        chat_str = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        try:
+            chat_str = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        except Exception as e:
+            # Fallback if system role not supported (e.g. Gemma)
+            if "system" in str(e).lower() or "role" in str(e).lower():
+                user_content = f"{cfg['prompt_templates']['system']}\n\n{item['raw_prompt']}"
+                messages = [{"role": "user", "content": user_content}]
+                chat_str = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            else:
+                raise e
+                
         item["chat_prompt"] = chat_str
         item["length"] = len(tokenizer.encode(chat_str, add_special_tokens=False))
+
 
     # Sort by length
     prompts_to_run.sort(key=lambda x: x["length"])
