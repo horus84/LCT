@@ -1,0 +1,11 @@
+model_id: "Qwen/Qwen2.5-7B-Instruct"
+dataset_path: "paired_dataset.json"
+in_file: "paired_generation_results.jsonl"
+out_file: "results/early_answer_scores.csv"
+cache_path: "data/processed/early_answer_token_cache.pt"
+calibration_output: "results/method_calibration.json"
+audit_output: "results/early_answering_audit.json"
+compute_report: "results/compute_report.json"
+truncations: [0.10, 0.50, 1.00]
+precision: "bfloat16"
+device: "cuda"
