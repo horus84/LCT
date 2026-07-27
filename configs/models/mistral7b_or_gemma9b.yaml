@@ -4,12 +4,13 @@ revision: "main"
 dtype: "bfloat16"
 quantization: null
 device_map: "auto"
-max_new_tokens: 1024
+max_new_tokens: 384
 do_sample: false
 temperature: 0.0
 top_p: null
 seed: 42
-batch_size: 4
+batch_size: 8
+
 prompt_templates:
   system: "You are a highly capable AI assistant."
   direct: |
