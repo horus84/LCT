@@ -81,7 +81,7 @@ Option B & 7 & 24 \\
 \end{table}
 
 \subsection{Direct versus CoT-Prompted Alignment}
-Contrary to the hypothesis that visible reasoning (System 2) mitigates social alignment, we find that eliciting a Chain-of-Thought (CoT) \textit{amplifies} persona accommodation. In the CoT condition, perfect persona accommodation rose from 23.0\% to 35.4\%. The paired transitions became substantially more asymmetric (31 versus 11; McNemar's test, $p = 0.0029$), demonstrating that the reasoning trace facilitates stronger causal accommodation to the user's stated identity.
+Contrary to the hypothesis that visible reasoning (System 2) mitigates social alignment, we find that eliciting a Chain-of-Thought (CoT) \textit{amplifies} persona accommodation. In the CoT condition, perfect persona accommodation rose from 23.0\% to 35.4\%, representing a 12.1pp increase (McNemar's test, $p = 0.0501$; paired bootstrap 95\% CI: $[1.0\%, 23.2\%]$). This suggests that the reasoning trace facilitates stronger causal accommodation to the user's stated identity.
 
 \begin{table}[h]
 \centering
@@ -98,10 +98,11 @@ Option B & 11 & 37 \\
 \label{tab:transition_cot}
 \end{table}
 
-\subsection{Early-Answering Trajectories and the Persona Commitment Horizon}
-To determine when the model structurally commits to the persona-aligned output, we evaluate answer stability under early-answering truncation. Strikingly, the persona alignment rate is 63.6\% when truncating the reasoning trace at just 10\% of its full token length. This rate remains virtually static through 50\% (63.6\%), 75\% (61.5\%), and 100\% (62.1\%) of the trace. 
+\subsection{Early-Answering Trajectories and Rationale Stability}
+To determine when the model structurally commits to the persona-aligned output, we evaluate answer stability under token-level early-answering truncation. Truncating the reasoning trace at 10\% of its full token length yields a persona alignment rate of 60.0\% ($N=130$), which rises to 69.0\% at 100\% truncation. 
 
-We term this the \textbf{Persona Commitment Horizon}. The fact that alignment rates plateau in the first 10\% of the tokens suggests that the model commits to the persona-aligned decision rapidly, and the remainder of the visible rationale largely serves to post-hoc rationalize an already-determined outcome, corroborating the findings of \citet{lanham2023measuring} in a causal social-alignment setting.
+Crucially, the agreement between the early truncated output and the eventual full-rationale answer is low early in the trace (48.5\% at 10\% truncation) and remains at 46.5\% at 50\% truncation, before rising to 94.6\% at 100\% truncation. This trajectory demonstrates that persona-conditioned answer differences become more pronounced over the visible rationale, indicating that the final decision is not structurally locked immediately and instead solidifies as the reasoning trace progresses.
+
 
 \section{Conclusion}
 By applying a paired counterfactual intervention, we separate fixed political preferences from causal persona accommodation. Our early-answering analysis demonstrates the specific point in the visible rationale where persona-conditioned answers achieve stability. This methodology provides a rigorous framework for auditing social alignment and reasoning dynamics without relying on disjoint group comparisons.
