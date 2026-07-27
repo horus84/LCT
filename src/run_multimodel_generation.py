@@ -161,12 +161,28 @@ def main():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, 
-        torch_dtype=torch.bfloat16 if cfg["dtype"] == "bfloat16" else torch.float16,
-        device_map=cfg["device_map"]
-    )
+    load_kwargs = {
+        "revision": cfg.get("revision", "main"),
+        "device_map": cfg["device_map"]
+    }
+    
+    if cfg.get("quantization") == "4bit":
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16 if cfg["dtype"] == "bfloat16" else torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True
+        )
+    elif cfg.get("quantization") == "8bit":
+        from transformers import BitsAndBytesConfig
+        load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        load_kwargs["torch_dtype"] = torch.bfloat16 if cfg["dtype"] == "bfloat16" else torch.float16
+
+    model = AutoModelForCausalLM.from_pretrained(model_id, **load_kwargs)
     model.eval()
+
 
     # Pre-tokenize to get exact token lengths for length-bucket sorting
     print("Pre-tokenizing inputs for length-bucket batching...")
