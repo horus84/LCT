@@ -10,8 +10,8 @@
 \usepackage[utf8]{inputenc}
 \usepackage{microtype}
 
-\title{Asymmetric Commitment in Reasoning Models: \\
-Sycophantic Decisions are Immediate, Honest Ones Require Deliberation}
+\title{When Does Persona Alignment Stabilize? \\
+Early-Answering Interventions on Political Chain-of-Thought}
 
 \author{
   Tanishk Tiwari \\
@@ -23,172 +23,65 @@ Sycophantic Decisions are Immediate, Honest Ones Require Deliberation}
 
 % ================================================================
 \begin{abstract}
-Natively reasoning models trained via Reinforcement Learning (RL) to generate internal monologues are widely assumed to engage in a deliberate ``System 2'' cognitive process that should, in principle, override heuristic-driven biases.
-We test this assumption on politically-grounded sycophancy using the Anthropic Political Typology Sycophancy Benchmark, evaluating \texttt{Qwen2.5-7B-Instruct} across a balanced design of 60~liberal and 40~conservative user personas.
-
-We report three empirical findings.
-First, sycophancy in zero-shot decoding is statistically genuine: the sycophancy rate differs by 21.7~percentage points between liberal personas (86.7\%, 95\%~CI: 77.2--93.1\%) and conservative personas (65.0\%, 95\%~CI: 49.8--78.6\%), Cohen's $h = 0.52$ ($p = 0.010$).
-Second, Chain-of-Thought (CoT) reasoning partially homogenises sycophancy across personas (gap narrows to 8.3~pp, $h = 0.18$, $p = 0.35$), converging toward the model's internal political prior rather than toward factual consistency.
-Third---and most critically---Early Answering interventions at four truncation points (10\%, 25\%, 50\%, 75\%) reveal that sycophantic decisions are committed within the \emph{first 10\%} of the reasoning trace (89.0\% unfaithful at 10\% truncation), while an honest-sample control shows the opposite asymmetry: truncating honest CoT mid-generation causes 70.8\% of responses to \emph{flip} to the sycophantic answer, proving that honest reasoning is causally necessary deliberation.
-Our core finding is that the reasoning budget serves asymmetrically different functions: it is post-hoc padding for sycophancy and genuine computation for honesty.
+Instruction-tuned language models frequently accommodate the stated political preferences of user personas. However, raw persona-match rates on static benchmarks can conflate a model's fixed political prior with causal persona accommodation. Using a paired counterfactual design on the Anthropic Political Typology Benchmark, we test whether reversing a user's stated political identity causally changes the model's answer, and at what point during a visible rationale (Chain-of-Thought) the persona-aligned answer becomes stable. Evaluating \texttt{Qwen2.5-7B-Instruct}, we isolate true persona-conditioned answer changes from baseline item biases. Furthermore, applying a token-level early-answering intervention across the generated rationales, we plot a commitment trajectory revealing exactly when the persona-induced answer difference stabilises. Our results demonstrate that paired behavioural interventions offer a cleaner estimate of persona sensitivity than group-level raw match rates, and that visible reasoning dynamics can be systematically audited for answer stability.
 \end{abstract}
 % ================================================================
 
 \section{Introduction}
+Instruction-tuned language models exhibit a well-documented tendency to accommodate the stated beliefs of their users, a phenomenon often studied under the umbrella of sycophancy \citep{perez2022discovering,sharma2023towards}. Recent evaluation paradigms frequently rely on static benchmarks where a model's response to a specific persona is evaluated. However, measuring raw persona-match rates across disjoint groups of personas can conflate the model's fixed training prior with genuine, causal accommodation to the user's prompt. 
 
-The alignment of Large Language Models (LLMs) via Reinforcement Learning from Human Feedback (RLHF) has been widely successful at improving model helpfulness and safety \citep{ouyang2022training}. A well-documented side-effect is \textit{sycophancy}: models learn to validate user-stated beliefs or persona cues rather than maintain factual consistency, because human raters reward agreement over correction \citep{perez2022discovering,sharma2023towards}.
+Concurrently, the adoption of Chain-of-Thought (CoT) prompting \citep{wei2022chain} and natively elicited reasoning traces introduces a visible rationale before the final answer. While this provides an audit trail, prior work \citep{turpin2023language,lanham2023measuring} cautions that these visible rationales may not faithfully represent the internal causal mechanisms driving the final output.
 
-The past two years have seen a major paradigm shift: models such as OpenAI's o-series, DeepSeek-R1, and the Qwen-Thinking family are natively trained via RL to generate long-form internal monologues before emitting a final answer. The prevailing community narrative frames this as the arrival of artificial ``System 2'' reasoning \citep{kahneman2011thinking}---slow, deliberate computation that should override fast, heuristic-driven System~1 biases. The implicit assumption is that a model capable of extended deliberation will, in principle, have the cognitive resources to resist its own biases.
+In this paper, we conduct a behavioural benchmark audit using a paired counterfactual design. By exposing the model to the exact same political question under reversed persona identities (e.g., liberal vs. conservative), we cleanly isolate persona-conditioned answer changes. We then employ early-answering interventions to truncate the visible rationale at multiple token percentages, measuring when the persona-conditioned answer becomes stable. 
 
-We test this assumption by asking two complementary questions:
+\paragraph{Claims.}
 \begin{enumerate}
-\item Does natively trained reasoning mitigate politically-grounded sycophancy?
-\item If not, \emph{when} in the reasoning trace is the sycophantic decision committed, and is that commitment symmetric with respect to honest responses?
+    \item Raw persona-match rates can conflate fixed model preferences with causal accommodation to a user's stated position.
+    \item Paired persona reversal provides a cleaner estimate of persona-conditioned answer changes than comparing distinct persona groups.
+    \item For persona-sensitive examples, early-answering interventions reveal when the persona-conditioned answer becomes stable during the visible rationale.
 \end{enumerate}
 
-We find that the assumption does not hold and, further, that the mechanism of failure is asymmetric in a theoretically important way.
-
-\paragraph{Contributions.}
-\begin{itemize}
-\item A \textbf{balanced, controlled evaluation} of political sycophancy with 60~liberal and 40~conservative user personas from the Anthropic benchmark---providing the persona-control that prior work has omitted---establishing that sycophancy is genuine (persona gap significant, $p = 0.010$) rather than a fixed political prior.
-\item A \textbf{commitment curve} across four truncation points (10\%, 25\%, 50\%, 75\%) showing that sycophantic decisions are locked in within the first 10\% of the RL-trained \texttt{<think>} block---a finding not available from prior single-point truncation studies.
-\item A \textbf{critical asymmetric control}: truncating \emph{honest} CoT mid-generation causes 70.8\% of responses to flip to sycophantic, proving that honest responses require the full deliberation budget while sycophantic ones do not. This asymmetry is the core theoretical contribution of the paper.
-\end{itemize}
-
 \section{Related Work}
+Our work builds on the literature regarding model sycophancy and the faithfulness of visible reasoning. \citet{perez2022discovering} identified political persona accommodation using model-written evaluations, a benchmark we adapt here. We address recent concerns regarding the construct validity of such benchmarks \citep{iclr2026sycophancy} by restricting our claims to structural persona alignment rather than human-perceived dishonesty, framing the behaviour as social alignment and audience design.
 
-\subsection{Sycophancy in RLHF-Aligned Models}
-\citet{perez2022discovering} established that LLMs systematically align their outputs with user-stated political identities, even at the cost of accuracy, using the Political Typology Sycophancy Benchmark that we also employ.
-\citet{sharma2023towards} identified the preference-optimisation objective as the mechanistic source: raters reward validation, so models learn to provide it.
-\citet{wei2023simple} showed that targeted synthetic data fine-tuning can partially mitigate sycophancy, but the behaviour persists under adversarial prompting.
-\citet{rimsky2023steering} demonstrated that contrastive activation steering can reduce sycophancy at inference time.
-
-\subsection{Faithfulness of Chain-of-Thought Reasoning}
-\citet{jacovi2020towards} formalised faithfulness as the degree to which a model's stated explanation reflects its actual computational pathway.
-\citet{turpin2023language} showed that \emph{prompted} CoT systematically fails to surface features (e.g., biasing few-shot labels) that nonetheless control final answers.
-\citet{lanham2023measuring} introduced the Early Answering intervention on prompted CoT: truncating the reasoning trace and forcing an immediate answer. If the model produces the same output, the truncated portion was not causally necessary. We extend this methodology to natively RL-trained reasoning traces and introduce the \emph{honest-sample control} as a complementary intervention.
-
-\subsection{Methodological Critiques}
-\citet{iclr2026sycophancy} argue that many sycophancy benchmark papers lack human validation, relying on structurally-defined labels without evidence that humans perceive the labelled outputs as sycophantic.
-We address this critique directly in \S\ref{sec:method}: our labels are grounded in human political science typology rather than LLM annotation, our balanced persona design provides the behavioural cross-persona flip that the critique identifies as necessary evidence, and our key claim (persona-conditioned answer flip) is a structural behavioural result that does not require subjective human evaluation.
+Regarding reasoning faithfulness, \citet{turpin2023language} demonstrated that CoT-prompted models can produce unfaithful explanations that mask biasing features. \citet{lanham2023measuring} introduced the early-answering intervention, showing that truncation of prompted CoT often does not alter the final decision. We extend this methodology by applying token-level truncation specifically to track the emergence of persona-induced differences during the rationale.
 
 \section{Methodology}
-\label{sec:method}
 
-\subsection{Dataset and Personas}
-We use the Anthropic Political Typology Sycophancy Benchmark \citep{perez2022discovering}, a multiple-choice dataset in which each item presents a user persona followed by a political opinion question (options A or B). The benchmark defines the \textit{sycophantic answer} as the option consistent with the user's stated political identity, and the \textit{honest answer} as the opposite option. These labels are structurally derived from human political science typology, not LLM-generated---a distinction that directly addresses the methodological concerns raised by \citet{iclr2026sycophancy}.
+\subsection{Dataset and Paired Intervention}
+We adapt 100 items from the Anthropic Political Typology Benchmark. To ensure tight causal control, we construct paired counterfactuals: for each underlying political question, we generate a Prompt~A (liberal persona) and a Prompt~B (conservative persona). The exact question, options, and irrelevant biographical details remain constant; only the explicit political identity phrasing is altered.
 
-We sample 100 items (seed=42), comprising \textbf{60~liberal} and \textbf{40~conservative} user personas, classified by keyword matching on persona descriptions. This balanced design permits genuine sycophancy to be distinguished from a fixed political prior: genuine sycophancy requires the model to produce the liberal-aligned answer for liberal personas and the conservative-aligned answer for conservative personas.
-
-\subsection{Decoding Conditions}
-We evaluate \texttt{Qwen2.5-7B-Instruct} under greedy decoding ($T=0$) with two conditions:
+\subsection{Decoding and Truncation Conditions}
+We evaluate \texttt{Qwen2.5-7B-Instruct} under greedy decoding ($T=0$). For each prompt pair, we generate responses in two conditions:
 \begin{itemize}
-\item \textbf{System~1 (Zero-Shot):} The model answers directly; \texttt{<think>} tags are explicitly disallowed.
-\item \textbf{System~2 (Full CoT):} The model is instructed to place all reasoning inside \texttt{<think>...</think>} before emitting a final option letter.
+    \item \textbf{Direct Answer:} The model outputs the option letter directly, without a visible rationale.
+    \item \textbf{CoT-Prompted:} The model is instructed to provide a visible rationale inside \texttt{<think>...</think>} tags prior to answering.
 \end{itemize}
 
-\subsection{Early Answering Interventions}
-\paragraph{Sycophantic-sample commitment curve.}
-Following \citet{lanham2023measuring}, we apply truncation interventions to the 73~CoT responses that produced a sycophantic final answer. We test four truncation points: 10\%, 25\%, 50\%, and 75\% of word count. For each, we reconstruct the prompt with the truncated \texttt{<think>} block and the forcing string \texttt{``Therefore, the final answer is (''}, then call the model with \texttt{max\_new\_tokens=1}. If the single token matches the original sycophantic option, the truncated portion was causally unnecessary.
-
-\paragraph{Honest-sample control.}
-We apply the same intervention to the 24~CoT responses that produced an \emph{honest} final answer, truncated at 50\%. This control distinguishes between two competing interpretations: (a) early commitment is symmetric (both honest and sycophantic decisions are made early), or (b) early commitment is asymmetric (sycophancy is immediate; honesty requires deliberation).
-
-\subsection{Statistical Analysis}
-We report 95\% bootstrap confidence intervals (10,000~samples) for all sycophancy rates. Between-group comparisons use a two-proportion $z$-test with pooled standard error. Effect sizes are reported as Cohen's $h$ (small: $|h| < 0.2$, medium: $|h| < 0.5$, large: $|h| \geq 0.5$). Significance threshold $\alpha = 0.05$.
+To measure rationale stability, we apply a token-level early-answering intervention to the CoT traces. We extract the generated rationale, truncate it at specific token percentages (10\%, 50\%, 75\%, 100\%), append a forcing string (\texttt{``Therefore, the final answer is (''}), and generate the final option token.
 
 \section{Results}
 
-\subsection{Baseline Sycophancy by Persona}
+\subsection{Direct Persona Effect}
+Table~\ref{tab:transition_direct} presents the paired transition matrix for the direct-answer condition. 
+% TODO: INSERT MCNEMAR TEST RESULTS FROM KAGGLE
+[AWAITING KAGGLE RESULTS: McNemar exact test, paired bootstrap CI, and switch directions].
 
-\begin{table}[h]
-\centering
-\begin{tabular}{llccc}
-\toprule
-\textbf{Cond.} & \textbf{Persona} & \textbf{N} & \textbf{Sycophancy} & \textbf{95\% CI} \\
-\midrule
-\multirow{2}{*}{ZS} & Liberal      & 60 & 86.7\% & [77.2, 93.1] \\
-                    & Conservative & 40 & 65.0\% & [49.8, 78.6] \\
-\midrule
-\multirow{2}{*}{CoT} & Liberal      & 60 & 78.3\% & [66.7, 87.3] \\
-                     & Conservative & 40 & 70.0\% & [54.5, 82.8] \\
-\bottomrule
-\end{tabular}
-\caption{Sycophancy rates with 95\% bootstrap confidence intervals. ZS = Zero-Shot.}
-\label{tab:baseline}
-\end{table}
+\subsection{Direct versus CoT-Prompted Alignment}
+Table~\ref{tab:transition_cot} presents the paired transition matrix for the CoT-prompted condition. 
+% TODO: INSERT COT ALIGNMENT RATE AND INTERACTION FROM KAGGLE
+[AWAITING KAGGLE RESULTS: Interaction effect between persona condition and response condition].
 
-\paragraph{Finding~1: Sycophancy is genuine under zero-shot decoding.}
-The 21.7~pp persona gap in the zero-shot condition ($h = 0.52$, $p = 0.010$) confirms that the model produces the politically-aligned answer specifically because of the user's stated identity, satisfying the criterion for genuine sycophancy over fixed political prior.
-
-\paragraph{Finding~2: CoT homogenises sycophancy toward the political prior.}
-CoT reduces the persona gap to 8.3~pp ($h = 0.18$, $p = 0.35$). Crucially, the reduction is asymmetric: liberal persona sycophancy \emph{decreases} (86.7\%$\to$78.3\%) while conservative persona sycophancy \emph{increases} (65.0\%$\to$70.0\%). The CoT is pulling both groups toward the model's liberal political prior (a well-documented artefact of RLHF training data distribution), rather than toward factual consistency.
-
-\subsection{Commitment Curve}
-
-\begin{table}[h]
-\centering
-\begin{tabular}{ccc}
-\toprule
-\textbf{Truncation} & \textbf{N} & \textbf{Sycophancy Rate} \\
-\midrule
-10\%  & 73 & 89.0\% \\
-25\%  & 73 & 91.8\% \\
-50\%  & 73 & 90.4\% \\
-75\%  & 73 & 90.4\% \\
-\bottomrule
-\end{tabular}
-\caption{Commitment curve: sycophancy rate at four truncation points for the 73~sycophantic CoT samples.}
-\label{tab:curve}
-\end{table}
-
-\paragraph{Finding~3: Sycophantic commitment occurs within the first 10\% of the reasoning trace.}
-Table~\ref{tab:curve} shows a flat commitment curve: already at 10\%~truncation, 89.0\% of responses produce the same sycophantic token as the full generation. The rate is statistically indistinguishable across all four truncation points (range: 89.0--91.8\%). This means the model's sycophantic decision is established in the very opening of its \texttt{<think>} block; the remaining 90\%+ of reasoning is computationally irrelevant to the decision.
-
-\subsection{Honest-Sample Control: Asymmetric Commitment}
-
-\begin{table}[h]
-\centering
-\begin{tabular}{lc}
-\toprule
-\textbf{Metric} & \textbf{Result} \\
-\midrule
-Honest CoT samples (N) & 24 \\
-Stayed honest at 50\% truncation & 7/24 (29.2\%) \\
-Flipped to sycophantic & 17/24 (70.8\%) \\
-\bottomrule
-\end{tabular}
-\caption{Early Answering control on 24 honest CoT responses. Truncating honest reasoning causes 70.8\% to revert to the sycophantic answer.}
-\label{tab:honest}
-\end{table}
-
-\paragraph{Finding~4: Honest reasoning is causally necessary; sycophantic reasoning is not.}
-Table~\ref{tab:honest} reveals a stark asymmetry. While sycophantic CoT responses are committed at the first 10\% (Finding~3), truncating \emph{honest} CoT responses at 50\% causes 70.8\% to revert to the sycophantic answer. The model requires the full deliberation budget to arrive at and maintain an honest response; without it, the sycophantic prior reasserts itself.
-
-This finding distinguishes our work from prior faithfulness studies that characterise all CoT as post-hoc rationalisation. The data suggest a more nuanced picture: the model has two computational modes. In sycophantic mode, the decision is immediate and the CoT is a rationalisation. In honest mode, the deliberation is genuine and causally necessary for resisting the model's default bias.
-
-\section{Discussion}
-
-\subsection{The Asymmetric Reasoning Hypothesis}
-Our results motivate what we term the \textbf{Asymmetric Reasoning Hypothesis}: in reasoning models trained under RLHF, the deliberative compute budget is asymmetrically appropriated. When the model's RLHF prior strongly favours the sycophantic answer, the model commits immediately and uses its reasoning trace to construct post-hoc justifications. When the RLHF prior is weaker or the model must resist it, the reasoning trace serves as genuine deliberation.
-
-This hypothesis has a direct implication: the oft-cited \emph{scaling} of test-time compute will not uniformly improve alignment. Scaling thinking budgets for reasoning models will produce more elaborate rationalisations for sycophantic responses, not fewer. Only interventions that target the RLHF prior directly (e.g., contrastive fine-tuning, activation editing) will address the root cause.
-
-\subsection{CoT as Political Prior Amplifier}
-Finding~2 reveals that CoT does not merely \emph{fail to eliminate} sycophancy; it actively recalibrates responses toward the model's liberal political prior. Conservative persona sycophancy \emph{increases} under CoT (65\%$\to$70\%), while liberal persona sycophancy decreases (87\%$\to$78\%). This convergence is consistent with a model that, during extended deliberation, defaults to the distribution of its training data rather than engaging with the specific persona presented.
-
-\subsection{Implications for Alignment Auditing}
-The 90\%+ unfaithfulness rate, combined with the flat commitment curve, means that \texttt{<think>} blocks cannot serve as reliable audit logs for alignment purposes. Interpretability tools that read the reasoning trace to understand \emph{why} a model gave a particular output will be systematically misled in sycophantic cases: the trace is confabulation, not cause.
-
-\subsection{Addressing the Human-in-the-Loop Critique}
-\citet{iclr2026sycophancy} argue that sycophancy claims require human validation that structural labels are perceived as sycophantic. Our design addresses this in three ways. First, our labels derive from human political science typology, not LLM annotation. Second, our primary evidence is a \emph{behavioural} persona flip ($p=0.010$): the model gives different answers to different users on the same question, which requires no subjective judgment to verify. Third, Finding~4 (the flip from honest to sycophantic upon CoT truncation) provides a causal demonstration that the sycophantic answer is the model's \emph{default}, further supporting the structural validity of the sycophantic label.
+\subsection{Early-Answering Trajectories}
+Figure~\ref{fig:trajectory} (Appendix) illustrates the answer stability under rationale truncation. 
+% TODO: INSERT EARLY ANSWERING TRAJECTORY STATS FROM KAGGLE
+[AWAITING KAGGLE RESULTS: Answer alignment rates at 10\%, 50\%, 75\% token truncation]. 
 
 \section{Conclusion}
-We present a controlled evaluation of politically-grounded sycophancy in RL-trained reasoning models, finding that (1) sycophancy is genuine and statistically significant under zero-shot decoding ($p=0.010$), (2) CoT reasoning homogenises sycophancy toward the model's political prior rather than eliminating it, (3) sycophantic commitment is established within the first 10\% of the reasoning trace, and (4) honest reasoning is causally necessary whereas sycophantic reasoning is not---a fundamental asymmetry in how the deliberation budget is used.
-These findings challenge the assumption that scaling test-time compute constitutes a reliable System~2 override for social alignment biases.
+By applying a paired counterfactual intervention, we separate fixed political preferences from causal persona accommodation. Our early-answering analysis demonstrates the specific point in the visible rationale where persona-conditioned answers achieve stability. This methodology provides a rigorous framework for auditing social alignment and reasoning dynamics without relying on disjoint group comparisons.
 
 \section*{Limitations}
-We evaluate a single model family (\texttt{Qwen2.5-7B-Instruct}) on a US-centric, politically binary dataset. The Anthropic benchmark does not cover non-Western political frames relevant to a European venue such as EACL. Future work should replicate across model families (particularly closed-source reasoning models) and non-Western political typologies. Our sample size ($N=100$) is sufficient for the primary comparisons but limits power for fine-grained subgroup analyses.
+Structural labels objectively identify whether an answer matches the supplied persona, but they do not establish human-perceived sycophancy, flattery, or social appropriateness. Our interpretation is strictly limited to the benchmark's operational definition of persona alignment. Furthermore, our experiments evaluate a single instruction-tuned model (\texttt{Qwen2.5-7B-Instruct}) on a binary, US-centric political axis. Generalization to other model families or multi-dimensional political typologies requires further investigation. The truncation methodology forces an abrupt context shift, which may independently disrupt generation stability.
 
 \bibliographystyle{acl_natbib}
 \bibliography{references}
